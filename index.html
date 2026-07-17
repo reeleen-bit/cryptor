@@ -1,0 +1,1807 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>BTC/USD — Chainlink (Polymarket RTDS)</title>
+<style>
+  :root{
+    --bg:#0b0e11;
+    --panel:#12161c;
+    --grid:#1e2329;
+    --text:#eaecef;
+    --muted:#848e9c;
+    --up:#0ecb81;
+    --down:#f6465d;
+    --accent:#375bd2;
+    --ma7:#f0b90b;
+    --ma25:#e91e63;
+    --ma99:#9c27b0;
+    --support:#0ecb81;
+    --resist:#f6465d;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  .wrap{max-width:1440px;margin:0 auto;padding:16px;}
+  .header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:12px;}
+  .pair{font-size:20px;font-weight:700;letter-spacing:.3px;}
+  .src{font-size:11px;color:#7f95ff;background:rgba(55,91,210,.15);border:1px solid #375bd2;padding:2px 8px;border-radius:4px;font-weight:700;}
+  .price{font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;}
+  .price.up{color:var(--up);}
+  .price.down{color:var(--down);}
+  .chg{font-size:14px;font-weight:600;padding:2px 8px;border-radius:4px;}
+  .chg.up{color:var(--up);background:rgba(14,203,129,.12);}
+  .chg.down{color:var(--down);background:rgba(246,70,93,.12);}
+  .meta{color:var(--muted);font-size:12px;margin-left:auto;display:flex;align-items:center;gap:6px;}
+  .status{width:8px;height:8px;border-radius:50%;background:var(--muted);}
+  .status.live{background:var(--up);animation:pulse 1.4s infinite;}
+  .status.down2{background:var(--down);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+
+  .tf-row{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;}
+  .tf-btn{background:var(--panel);border:1px solid var(--grid);color:var(--muted);padding:6px 10px;border-radius:6px;font-size:12.5px;cursor:pointer;font-weight:600;}
+  .tf-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .tf-btn.on{background:rgba(14,203,129,.18);color:var(--up);border-color:var(--up);}
+  .tf-btn.off{background:rgba(246,70,93,.15);color:var(--down);border-color:var(--down);}
+  .tf-btn:hover:not(.active){color:var(--text);border-color:#3a4048;}
+  .sep{width:1px;height:18px;background:var(--grid);margin:0 4px;}
+  .hint{margin-left:auto;font-size:11px;color:var(--muted);}
+
+  .charts{display:flex;gap:10px;}
+  .panel{background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:10px;position:relative;flex:1;min-width:0;}
+  .panel.proj{flex:0 0 340px;}
+  .panel-title{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.4px;text-transform:uppercase;margin-bottom:6px;display:flex;justify-content:space-between;}
+  .panel-title .val{color:var(--text);font-variant-numeric:tabular-nums;}
+  canvas{display:block;width:100%;cursor:crosshair;-webkit-user-select:none;user-select:none;touch-action:none;}
+  .ohlc{display:flex;gap:14px;font-size:12px;color:var(--muted);padding:0 4px 8px;flex-wrap:wrap;align-items:center;}
+  .ohlc b{color:var(--text);}
+  .ohlc b.up{color:var(--up);}
+  .ohlc b.down{color:var(--down);}
+  .ma-tag{font-weight:700;}
+
+  .legend{display:flex;gap:16px;font-size:11px;color:var(--muted);margin-top:8px;flex-wrap:wrap;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .dot{width:9px;height:3px;border-radius:2px;display:inline-block;}
+
+  .disclaimer{margin-top:8px;font-size:11px;color:var(--muted);line-height:1.5;}
+  .note{margin-top:10px;font-size:11px;color:var(--muted);}
+  .err{color:var(--down);font-size:12px;margin-top:6px;}
+
+  .chart-wrap{position:relative;}
+  #timeAxis{cursor:ew-resize;}
+  .vol-resize{height:6px;margin:2px 0;border-radius:3px;background:var(--grid);cursor:ns-resize;}
+  .vol-resize:hover, .vol-resize.dragging{background:#3a4048;}
+  .chart-resize{height:6px;margin:2px 0;border-radius:3px;background:var(--grid);cursor:ns-resize;}
+  .chart-resize:hover, .chart-resize.dragging{background:#3a4048;}
+  .vol-tooltip{display:none;position:fixed;background:#1c222b;border:1px solid var(--grid);border-radius:6px;
+    padding:6px 10px;font-size:11px;color:var(--text);line-height:1.5;pointer-events:none;z-index:60;
+    box-shadow:0 4px 12px rgba(0,0,0,.4);}
+
+  .alertpop{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;
+    padding:12px 20px;border-radius:10px;font-size:13px;font-weight:600;max-width:560px;text-align:center;
+    box-shadow:0 8px 24px rgba(0,0,0,.4);transition:opacity .25s ease, transform .25s ease;z-index:50;}
+  .alertpop.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto;}
+  .alertpop.pump{background:#0f2a1c;color:#5be89a;border:1px solid #1d5c3a;}
+  .alertpop.dump{background:#2e1216;color:#ff9b9b;border:1px solid #5a1f26;}
+  .alertpop.warn{background:#332a12;color:#ffd580;border:1px solid #6b551f;}
+  .alertpop.gap{background:#12202e;color:#7fb8ff;border:1px solid #24425e;}
+  .gaplog{width:100%;border-collapse:collapse;font-size:11px;}
+  .gaplog th,.gaplog td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--grid);}
+  .gaplog th:first-child,.gaplog td:first-child{text-align:left;}
+  .gaplog .res-above{color:var(--up);font-weight:700;}
+  .gaplog .res-below{color:var(--down);font-weight:700;}
+  .alertpop.critical{animation:alertPulse 1s ease-in-out infinite; font-size:14px;}
+  @keyframes alertPulse{0%,100%{transform:translateX(-50%) scale(1);}50%{transform:translateX(-50%) scale(1.035);}}
+  .alertpop b{display:block;font-size:14px;margin-bottom:2px;}
+  .alertpop-close{position:absolute;top:6px;right:10px;cursor:pointer;font-size:16px;line-height:1;opacity:.7;}
+  .alertpop-close:hover{opacity:1;}
+  .alertpop{padding-right:28px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <span class="pair">BTC/USD</span>
+    <span class="src">Chainlink · Polymarket RTDS</span>
+    <span class="price" id="price">--</span>
+    <span class="chg" id="chg">--</span>
+    <span class="src" style="color:#f0b90b;border-color:#f0b90b;background:rgba(240,185,11,.12);">Binance</span>
+    <span class="price" id="priceBinance" style="font-size:16px;">--</span>
+    <span class="chg" id="gapDisplay" title="Écart en % entre Binance (affichage) et Chainlink (résolution)">--</span>
+    <span class="meta"><span class="status" id="statusDot"></span><span id="statusText">connexion…</span></span>
+  </div>
+
+  <div class="tf-row" id="tfRow">
+    <span class="sep"></span>
+    <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">
+      Historique:
+      <select id="sourceSelect" style="background:var(--panel);color:var(--text);border:1px solid var(--grid);border-radius:6px;padding:5px 8px;font-size:12.5px;">
+        <option value="chainlink">Chainlink on-chain (Polygon)</option>
+        <option value="binance">Binance (BTC/USDT)</option>
+      </select>
+    </label>
+    <span class="hint" id="hint" style="display:none"></span>
+  </div>
+
+  <div class="tf-row">
+    <label id="targetLabel" style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:8px;">
+      Target:
+      <input id="targetInput" type="text" inputmode="decimal" readonly title="Rempli automatiquement avec le vrai Price to Beat Polymarket (fenêtre de 5 min en cours)" style="width:130px;background:var(--panel);color:var(--text);border:1px solid var(--grid);border-radius:6px;padding:5px 8px;font-size:12.5px;cursor:default;">
+      <span id="p2bCountdown" style="color:var(--accent);font-variant-numeric:tabular-nums;font-weight:600;" title="Temps restant dans la fenêtre Polymarket de 5 min en cours (horloge universelle)"></span>
+    </label>
+    <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">
+      <input type="checkbox" id="showMA" checked style="width:15px;height:15px;">
+      <span>Afficher MA7/25/99</span>
+    </label>
+    <button class="tf-btn" id="zoomOut" title="Voir plus de bougies (dézoomer)">−</button>
+    <button class="tf-btn" id="zoomIn" title="Voir moins de bougies (zoomer)">+</button>
+    <button class="tf-btn" id="goLive" title="Revenir aux dernières données">⏵ Direct</button>
+    <button class="tf-btn" id="centerPrice" title="Centrer verticalement sur le prix actuel">⊙ Centrer prix</button>
+    <button class="tf-btn" id="resetZoom" title="Réinitialiser largeur des bougies et temps">↺ Reset</button>
+    <button class="tf-btn on" id="toggleRecenter" title="Recentrage automatique sur le direct">Recentrage: activé</button>
+    <span class="sep"></span>
+    <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">
+      Seuil alerte écart:
+      <input id="gapThreshold" type="number" value="0.05" step="0.01" min="0.01" style="width:60px;background:var(--panel);color:var(--text);border:1px solid var(--grid);border-radius:6px;padding:5px 8px;font-size:12.5px;">%
+    </label>
+    <button class="tf-btn" id="exportLogs" title="Télécharger le journal des écarts Binance/Chainlink (JSON)">⬇ Export logs</button>
+    <button class="tf-btn" id="showSummary" title="Analyse en langage simple des observations de cette session">📋 Résumé</button>
+  </div>
+
+  <div class="charts">
+    <div class="panel">
+      <div class="ohlc" id="ohlc"></div>
+      <div class="chart-wrap">
+        <canvas id="chart" height="460"></canvas>
+      </div>
+      <div class="chart-resize" id="chartResize" title="Glisser pour agrandir/réduire le graphique"></div>
+      <canvas id="volChart" height="70"></canvas>
+      <div class="vol-resize" id="volResize" title="Glisser pour agrandir/réduire le panneau volume"></div>
+      <canvas id="timeAxis" height="26"></canvas>
+      <div class="err" id="err"></div>
+      <div class="legend">
+        <span><span class="dot" style="background:#0ecb81"></span>hausse</span>
+        <span><span class="dot" style="background:#f6465d"></span>baisse</span>
+        <span><span class="dot" style="background:var(--ma7)"></span>MA7</span>
+        <span><span class="dot" style="background:var(--ma25)"></span>MA25</span>
+        <span><span class="dot" style="background:var(--ma99)"></span>MA99</span>
+        <span><span class="dot" style="background:var(--support)"></span>support</span>
+        <span><span class="dot" style="background:var(--resist)"></span>résistance</span>
+        <span><span class="dot" style="background:rgba(255,255,255,.35)"></span>historique Binance</span>
+        <span><span class="dot" style="background:rgba(14,203,129,.55)"></span>volume hausse</span>
+        <span><span class="dot" style="background:rgba(246,70,93,.55)"></span>volume baisse</span>
+      </div>
+      <div class="note" id="sourceNote">Historique via Chainlink on-chain (Polygon, feed BTC/USD) — chargement possible en quelques secondes (plusieurs appels réseau). Bascule automatique sur Binance si injoignable. Bougies récentes = Chainlink live (RTDS). Heures en Tahiti (UTC-10).</div>
+    </div>
+
+    <div class="panel proj">
+      <div class="panel-title">Projection statistique <span class="val" id="projVal">--</span></div>
+      <canvas id="projChart" height="460"></canvas>
+      <div class="legend">
+        <span><span class="dot" style="background:#7f95ff"></span>tendance projetée</span>
+        <span><span class="dot" style="background:rgba(127,149,255,.25)"></span>zone d'incertitude</span>
+      </div>
+      <div class="disclaimer">
+        Régression linéaire sur les dernières clôtures de la période sélectionnée, cône d'incertitude basé sur l'ATR.
+        Recalculée à chaque changement de période. Pas une garantie de prix futur.
+      </div>
+      <div class="note" id="insightsPanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
+      <div class="note" id="gapLogPanel" style="display:none;margin-top:8px;"></div>
+      <div class="note" id="summaryPanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.25);border-radius:6px;padding:10px 12px;font-size:12.5px;line-height:1.7;"></div>
+    </div>
+  </div>
+
+</div>
+
+<div id="alertPopup" class="alertpop"><span id="alertClose" class="alertpop-close">×</span><span id="alertContent"></span></div>
+<div id="volTooltip" class="vol-tooltip"></div>
+
+<script>
+const TFS = [
+  {label:'1s', seconds:1},
+  {label:'2s', seconds:2},
+  {label:'5s', seconds:5},
+  {label:'10s', seconds:10},
+  {label:'30s', seconds:30},
+  {label:'1m', seconds:60},
+  {label:'5m', seconds:300},
+  {label:'15m', seconds:900},
+  {label:'30m', seconds:1800},
+  {label:'1H', seconds:3600},
+  {label:'2H', seconds:7200},
+  {label:'1J', seconds:86400},
+];
+let currentSec = 2;
+let ticks = [];
+let binanceTicks = []; // flux live Binance (affichage), en parallèle de ticks (Chainlink, résolution)
+let binanceWs = null;
+let lastGapAlertAt = 0; // debounce pour ne pas spammer l'alerte d'écart
+let gapLog = []; // journal des fenêtres 5 min : écart Binance/Chainlink aux checkpoints + résultat final
+let ws = null;
+let pingTimer = null;
+let historyCache = {};   // seconds -> aggregated history candles
+let base1sCache = null;  // raw Binance 1s candles for sub-minute aggregation
+let vol1sCache = null;
+let volumeCache = {};
+let currentVolumes = [];
+let sourceMode = 'chainlink'; // 'chainlink' | 'binance' -- Chainlink par défaut; bascule auto sur Binance si injoignable (voir loadHistory)
+let chainlinkRawHistory = null; // raw {time,v} points fetched on-chain, independent of timeframe
+
+const POLYGON_RPCS = [
+  'https://polygon-rpc.com',
+  'https://polygon.llamarpc.com',
+  'https://rpc.ankr.com/polygon',
+  'https://polygon-bor-rpc.publicnode.com',
+  'https://1rpc.io/matic',
+];
+const BTC_USD_FEED = '0xc907E116054Ad103354f2D350FD2514433D57F6f';
+
+// Note : une tentative de synchronisation horaire via une API de temps externe a été retirée
+// (elle introduisait une erreur d'une minute au lieu de la corriger). now() est un simple alias de
+// l'horloge locale ; les fonctions de fenêtre/PTB s'appuient sur elle sans correction externe.
+function now(){ return Date.now(); }
+const FEED_DECIMALS = 8;
+
+let visibleCount = 90;
+let chartHeight = 460;
+const CHART_HEIGHT_MIN = 200, CHART_HEIGHT_MAX = 900;
+let volHeight = 70;
+const VOL_HEIGHT_MIN = 30, VOL_HEIGHT_MAX = 240;
+let panOffset = 0; // float, in "candle units" back from the most recent
+const MIN_VISIBLE = 15;
+const MAX_VISIBLE = 400;
+let lastGeom = null;
+let hoverPx = null; // {x,y} mouse position in canvas CSS px, or null
+let priceScaleFactor = 1; // vertical zoom: 1 = auto-fit, >1 = zoomed out (wider range), <1 = zoomed in
+const PRICE_SCALE_MIN = 0.15, PRICE_SCALE_MAX = 6;
+let priceCenterOffset = 0; // manual vertical pan, added to the auto-computed price range center
+
+const BINANCE_INTERVAL = {60:'1m',300:'5m',900:'15m',1800:'30m',3600:'1h',7200:'2h',86400:'1d'};
+
+const tfRow = document.getElementById('tfRow');
+const sourceSelect = document.getElementById('sourceSelect');
+sourceSelect.value = sourceMode;
+sourceSelect.addEventListener('change', async ()=>{
+  sourceMode = sourceSelect.value;
+  panOffset = 0;
+  errEl.textContent = 'Chargement de l\'historique '+(sourceMode==='chainlink'?'Chainlink on-chain':'Binance')+'…';
+  document.getElementById('sourceNote').textContent = sourceMode==='chainlink'
+    ? 'Historique via Chainlink on-chain (Polygon, feed BTC/USD) — mises à jour uniquement sur déviation ≥0,1% ou heartbeat, donc moins dense qu\'un vrai 1min. Bougies récentes = Chainlink live (RTDS). Heures en Tahiti (UTC-10).'
+    : 'Historique via Binance BTC/USDT (Chainlink RTDS n\'a pas d\'historique). Bougies récentes = Chainlink live (RTDS). Heures en Tahiti (UTC-10).';
+  await loadHistory(currentSec);
+  if(errEl.textContent.startsWith('Chargement')) errEl.textContent='';
+  draw();
+  drawProjection();
+});
+TFS.forEach((tf,i)=>{
+  const btn = document.createElement('button');
+  btn.className = 'tf-btn' + (tf.seconds===currentSec?' active':'');
+  btn.textContent = tf.label;
+  btn.onclick = async ()=>{
+    currentSec = tf.seconds;
+    panOffset = 0;
+    [...tfRow.querySelectorAll('.tf-btn')].forEach(c=>c.classList.remove('active'));
+    btn.classList.add('active');
+    await loadHistory(currentSec);
+    await refreshVolumes(currentSec);
+    draw();
+    drawProjection();
+  };
+  tfRow.insertBefore(btn, document.getElementById('hint'));
+  if(tf.seconds===30){
+    const sep = document.createElement('span');
+    sep.className='sep';
+    tfRow.insertBefore(sep, document.getElementById('hint'));
+  }
+});
+
+function encodeUint(n){ return n.toString(16).padStart(64,'0'); }
+function decodeWords(hex){
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  const words = [];
+  for(let i=0;i<clean.length;i+=64) words.push(BigInt('0x'+(clean.slice(i,i+64)||'0')));
+  return words;
+}
+
+async function rpcBatch(calls, rpcUrl, timeoutMs){
+  timeoutMs = timeoutMs || 3000;
+  const body = calls.map(c=>({jsonrpc:'2.0', id:c.id, method:'eth_call', params:[{to:c.to, data:c.data}, 'latest']}));
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), timeoutMs);
+  try{
+    const res = await fetch(rpcUrl, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal:controller.signal});
+    if(!res.ok) throw new Error('RPC HTTP '+res.status);
+    const json = await res.json();
+    const arr = Array.isArray(json) ? json : [json];
+    const map = new Map();
+    arr.forEach(r=>{ if(r && r.id!==undefined) map.set(r.id, r.result); });
+    return calls.map(c=>map.get(c.id));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function findWorkingRpc(){
+  for(const url of POLYGON_RPCS){
+    try{
+      const [result] = await rpcBatch([{id:0, to:BTC_USD_FEED, data:'0xfeaf968c'}], url, 2500);
+      if(result && result!=='0x'){ return url; }
+    }catch(e){ /* try next endpoint */ }
+  }
+  throw new Error('aucun RPC Polygon accessible (timeout ou CORS)');
+}
+
+async function fetchChainlinkOnchainHistory(count){
+  count = count || 150;
+  const rpcUrl = await findWorkingRpc();
+
+  const [latestResult] = await rpcBatch([{id:0, to:BTC_USD_FEED, data:'0xfeaf968c'}], rpcUrl);
+  if(!latestResult || latestResult==='0x') throw new Error('latestRoundData vide');
+  const [roundId, answer, , updatedAt] = decodeWords(latestResult);
+
+  const calls = [];
+  for(let i=1;i<count;i++){
+    const rid = roundId - BigInt(i);
+    if(rid < 0n) break;
+    calls.push({id:i, to:BTC_USD_FEED, data:'0x9a6fc8f5'+encodeUint(rid)});
+  }
+
+  const points = [{time:Number(updatedAt)*1000, v:Number(answer)/(10**FEED_DECIMALS)}];
+  for(let i=0;i<calls.length;i+=20){
+    const chunk = calls.slice(i,i+20);
+    let results;
+    try{ results = await rpcBatch(chunk, rpcUrl); }
+    catch(e){ continue; }
+    for(const r of results){
+      if(!r || r==='0x') continue;
+      const w = decodeWords(r);
+      const ans = w[1], up = w[3];
+      if(up===0n) continue;
+      points.push({time:Number(up)*1000, v:Number(ans)/(10**FEED_DECIMALS)});
+    }
+  }
+  if(points.length < 3) throw new Error('trop peu de rounds récupérés ('+points.length+')');
+  const uniq = Array.from(new Map(points.map(p=>[p.time,p])).values()).sort((a,b)=>a.time-b.time);
+  return uniq;
+}
+
+function applyContinuity(arr){
+  for(let i=1;i<arr.length;i++){
+    arr[i].open = arr[i-1].close;
+    if(arr[i].open > arr[i].high) arr[i].high = arr[i].open;
+    if(arr[i].open < arr[i].low) arr[i].low = arr[i].open;
+  }
+  return arr;
+}
+
+function bucketPoints(points, seconds){
+  if(points.length===0) return [];
+  const bucketMs = seconds*1000;
+  const map = new Map();
+  for(const p of points){
+    const bucket = Math.floor(p.time/bucketMs)*bucketMs;
+    if(!map.has(bucket)) map.set(bucket, []);
+    map.get(bucket).push(p.v);
+  }
+  const buckets = [...map.keys()].sort((a,b)=>a-b);
+  const out = buckets.map(b=>{
+    const vals = map.get(b);
+    return {time:b, open:vals[0], close:vals[vals.length-1], high:Math.max(...vals), low:Math.min(...vals), isHistory:true};
+  });
+  return applyContinuity(out);
+}
+
+document.getElementById('zoomOut').onclick = ()=>{
+  visibleCount = Math.round(Math.min(MAX_VISIBLE, visibleCount*1.4));
+  draw();
+};
+document.getElementById('zoomIn').onclick = ()=>{
+  visibleCount = Math.round(Math.max(MIN_VISIBLE, visibleCount/1.4));
+  draw();
+};
+document.getElementById('goLive').onclick = ()=>{
+  panOffset = 0;
+  priceScaleFactor = 1;
+  priceCenterOffset = 0;
+  draw();
+  drawProjection();
+};
+
+document.getElementById('centerPrice').onclick = ()=>{
+  const all = buildCandles(currentSec);
+  if(all.length===0) return;
+  const currentPrice = ticks.length ? ticks[ticks.length-1].v : all[all.length-1].close;
+  const {minP, maxP} = computeRawPriceRange(all);
+  const rawCenter = (minP+maxP)/2;
+  priceCenterOffset = currentPrice - rawCenter;
+  draw();
+  drawProjection();
+};
+
+document.getElementById('resetZoom').onclick = ()=>{
+  visibleCount = 90;
+  panOffset = 0;
+  priceScaleFactor = 1;
+  priceCenterOffset = 0;
+  draw();
+  drawProjection();
+};
+
+let autoRecenter = true;
+
+function setToggleBtn(id, state, onLabel, offLabel){
+  const btn = document.getElementById(id);
+  btn.textContent = state ? onLabel : offLabel;
+  btn.classList.toggle('on', state);
+  btn.classList.toggle('off', !state);
+}
+
+document.getElementById('toggleRecenter').onclick = ()=>{
+  autoRecenter = !autoRecenter;
+  setToggleBtn('toggleRecenter', autoRecenter, 'Recentrage: activé', 'Recentrage: désactivé');
+};
+
+let targetPrice = null;
+const targetInput = document.getElementById('targetInput');
+let estimatedPTB = false; // vrai tant que la valeur affichée vient d'une estimation on-chain, pas d'un tick live confirmé
+
+let autoFillState = { windowStart: null, filled: false, onchainCheckStarted: false };
+function ensureAutoFillWindow(windowStart){
+  if(autoFillState.windowStart !== windowStart){
+    autoFillState.windowStart = windowStart;
+    autoFillState.filled = false;
+    autoFillState.onchainCheckStarted = false;
+    estimatedPTB = false;
+  }
+}
+
+// "Price to Beat" = le tout premier prix Chainlink reçu à/après le début exact de la fenêtre Polymarket.
+// Il n'y a pas de décalage volontaire à appliquer : le vrai Price to Beat est bien le prix à t=0 de la
+// fenêtre, pas un prix quelques secondes plus tard (qui a déjà pu bouger). On attend juste que ce tick
+// arrive (souvent en 1-2s, parfois un peu plus selon la latence RTDS) — jamais de repli sur un tick
+// antérieur à la fenêtre, ce qui donnait de faux chiffres.
+//
+// Garde-fou : si le premier tick disponible >= windowStart arrive bien plus tard que quelques secondes
+// après le début de fenêtre, ce n'est PAS le vrai prix d'ouverture — c'est simplement le premier tick
+// reçu depuis que la page/connexion RTDS a démarré en plein milieu de cette fenêtre (ex: rechargement
+// de page). Dans ce cas on refuse la valeur (voir fetchAndVerifyOnchainPTB pour le repli utilisé à la place).
+const PRICE_TO_BEAT_MAX_LAG_MS = 15000;
+function computePriceToBeat(windowSeconds){
+  const bucketMs = windowSeconds*1000;
+  const windowStart = Math.floor(now()/bucketMs)*bucketMs;
+  for(const tk of ticks){
+    if(tk.t >= windowStart){
+      if(tk.t - windowStart <= PRICE_TO_BEAT_MAX_LAG_MS) return tk.v;
+      break;
+    }
+  }
+  return null;
+}
+
+// Repli quand on ouvre en plein milieu d'une fenêtre (aucun tick live assez tôt) : on interroge
+// directement la source Chainlink on-chain (jamais Binance, ce n'est pas la même source que Polymarket
+// utilise pour résoudre le marché). On répète la vérification 3 fois à quelques secondes d'intervalle
+// pour confirmer que le round retenu est stable, avant de l'afficher comme fiable (sans "≈").
+const WINDOW_SECONDS = 300; // Polymarket BTC 5 min uniquement
+
+async function fetchAndVerifyOnchainPTB(windowStart, attempt){
+  attempt = attempt || 1;
+  try{
+    const rawHistory = await fetchChainlinkOnchainHistory(60); // requête fraîche, indépendante du cache du graphique
+    let best = null;
+    for(const p of rawHistory){
+      if(p.time >= windowStart && (best===null || p.time < best.time)) best = p;
+    }
+    if(!best){
+      let lastBefore = null;
+      for(const p of rawHistory){
+        if(p.time < windowStart && (lastBefore===null || p.time > lastBefore.time)) lastBefore = p;
+      }
+      best = lastBefore;
+    }
+    const info = getWindowInfo(WINDOW_SECONDS);
+    if(info.start !== windowStart) return; // on a changé de fenêtre entretemps : plus pertinent, on abandonne
+    if(autoFillState.filled && !estimatedPTB) return; // déjà confirmé par un vrai tick live entretemps, ne pas régresser
+
+    if(best){
+      targetPrice = best.v;
+      targetInput.value = '≈ ' + best.v.toFixed(2);
+      estimatedPTB = true;
+      autoFillState.filled = true;
+      draw();
+      drawProjection();
+    }
+  }catch(e){
+    console.error('vérification Price to Beat on-chain', e);
+  }
+
+  const info2 = getWindowInfo(WINDOW_SECONDS);
+  if(info2.start !== windowStart) return;
+  if(attempt < 3){
+    setTimeout(()=>fetchAndVerifyOnchainPTB(windowStart, attempt+1), 4000);
+  } else if(estimatedPTB && targetPrice !== null){
+    // 3 vérifications faites sur cette fenêtre : on retire le "≈" (un vrai tick live pourra toujours l'affiner ensuite)
+    targetInput.value = targetPrice.toFixed(2);
+  }
+}
+
+// ---- compte à rebours de la fenêtre Polymarket en cours (calé sur l'horloge universelle) ----
+function getWindowInfo(windowSeconds){
+  const bucketMs = windowSeconds*1000;
+  const start = Math.floor(now()/bucketMs)*bucketMs;
+  const end = start + bucketMs;
+  return {start, end, secondsLeft: Math.max(0, Math.round((end-now())/1000))};
+}
+
+let lastWindowStart = null;
+const p2bCountdown = document.getElementById('p2bCountdown');
+function tryAutoFillPriceToBeat(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  ensureAutoFillWindow(info.start);
+  if(autoFillState.filled && !estimatedPTB) return; // déjà confirmé par un vrai tick live
+
+  const ptb = computePriceToBeat(WINDOW_SECONDS);
+  if(ptb !== null){
+    targetPrice = ptb;
+    targetInput.value = ptb.toFixed(2);
+    estimatedPTB = false;
+    autoFillState.filled = true;
+    draw();
+    drawProjection();
+    return;
+  }
+
+  if(!autoFillState.onchainCheckStarted){
+    autoFillState.onchainCheckStarted = true;
+    fetchAndVerifyOnchainPTB(info.start, 1);
+  }
+}
+// ---- Analyse des retournements par rapport au Price to Beat, session en cours ----
+// On enregistre, pour chaque fenêtre de 5 min réellement observée depuis l'ouverture (avec un PTB
+// confirmé, pas une estimation "≈"), si le prix est passé au-dessus/en-dessous du PTB à quelques
+// instants clés avant la clôture, et si cette position a changé par rapport à l'état final.
+// C'est une observation statistique sur l'échantillon accumulé cette session — pas une prédiction.
+const CHECKPOINT_MARKS = [30, 20, 10, 5, 2];
+let windowTrack = null;
+let sessionWindows = [];
+
+function finalizeWindowTrack(wt){
+  // journal des écarts Binance/Chainlink pour cette fenêtre, indépendant du PTB (même si le PTB manque)
+  if(Object.keys(wt.gapCheckpoints||{}).length > 0 || wt.finalGap !== null){
+    const lateSig = lateSignalFlags[wt.windowStart];
+    gapLog.push({
+      windowStart: wt.windowStart,
+      gapCheckpoints: wt.gapCheckpoints,
+      finalGap: wt.finalGap,
+      result: wt.lastRel, // 'above'/'below' le PTB à la clôture, null si PTB indisponible
+      lateSignal: lateSig ? {momentum: lateSig.momentum, secondsLeft: lateSig.secondsLeft} : null,
+    });
+    delete lateSignalFlags[wt.windowStart];
+    if(gapLog.length > 200) gapLog.shift();
+    renderGapLogTable();
+  }
+
+  if(wt.ptb === null || !wt.lastRel) return; // pas assez de données pour compter cette fenêtre (analyse retournement)
+  const record = {
+    windowStart: wt.windowStart,
+    finalRel: wt.lastRel,
+    flips: {},
+    crossings: wt.crossings || 0,
+    lastFlipSecondsLeft: wt.lastFlipSecondsLeft,
+  };
+  for(const mark of CHECKPOINT_MARKS){
+    const cp = wt.checkpoints[mark];
+    if(cp) record.flips[mark] = (cp !== wt.lastRel);
+  }
+  sessionWindows.push(record);
+  if(sessionWindows.length > 200) sessionWindows.shift();
+  updateInsightsPanel();
+}
+
+function updateWindowTracking(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  if(!windowTrack || windowTrack.windowStart !== info.start){
+    if(windowTrack) finalizeWindowTrack(windowTrack);
+    windowTrack = {windowStart: info.start, ptb: null, checkpoints: {}, marked: new Set(), lastRel: null, prevRel: null, crossings: 0, lastFlipSecondsLeft: null, gapCheckpoints: {}, gapMarked: new Set(), finalGap: null};
+  }
+  // on ne fixe le PTB de référence que s'il est confirmé (pas une simple estimation "≈")
+  if(windowTrack.ptb === null && targetPrice !== null && !estimatedPTB){
+    windowTrack.ptb = targetPrice;
+  }
+  // écart Binance/Chainlink : enregistré aux mêmes checkpoints, indépendamment du PTB
+  const gap = currentGapPct();
+  if(gap !== null){
+    windowTrack.finalGap = gap;
+    for(const mark of CHECKPOINT_MARKS){
+      if(info.secondsLeft <= mark && !windowTrack.gapMarked.has(mark)){
+        windowTrack.gapCheckpoints[mark] = gap;
+        windowTrack.gapMarked.add(mark);
+      }
+    }
+  }
+  if(windowTrack.ptb !== null && ticks.length){
+    const lastV = ticks[ticks.length-1].v;
+    const rel = lastV >= windowTrack.ptb ? 'above' : 'below';
+    for(const mark of CHECKPOINT_MARKS){
+      if(info.secondsLeft <= mark && !windowTrack.marked.has(mark)){
+        windowTrack.checkpoints[mark] = rel;
+        windowTrack.marked.add(mark);
+      }
+    }
+    if(windowTrack.prevRel !== null && windowTrack.prevRel !== rel){
+      windowTrack.crossings += 1;
+      windowTrack.lastFlipSecondsLeft = info.secondsLeft;
+    }
+    windowTrack.prevRel = rel;
+    windowTrack.lastRel = rel;
+  }
+}
+
+function computeLateSignalStats(){
+  const withBoth = gapLog.filter(g => g.lateSignal && g.result);
+  if(withBoth.length === 0) return null;
+  const correct = withBoth.filter(g =>
+    (g.lateSignal.momentum > 0 && g.result === 'above') ||
+    (g.lateSignal.momentum < 0 && g.result === 'below')
+  ).length;
+  return {n: withBoth.length, correct, pct: Math.round(correct/withBoth.length*100)};
+}
+
+// Résumé en langage simple, pensé pour être lu sans connaissances techniques : phrases courtes,
+// pas de jargon statistique, délai (secondes avant clôture) explicité à chaque fois que c'est pertinent.
+function generateHumanSummary(){
+  const lines = [];
+  lines.push(`Sur ${gapLog.length} fenêtre(s) de 5 minutes observée(s) depuis l'ouverture de Cryptor :`);
+
+  const withSignal = gapLog.filter(g => g.lateSignal && g.result);
+  const stats = computeLateSignalStats();
+
+  if(!stats){
+    lines.push("Pas encore assez de signaux tardifs Binance détectés avec un résultat confirmé pour en tirer une conclusion.");
+  } else {
+    lines.push(`Le signal tardif Binance a annoncé le bon sens ${stats.correct} fois sur ${stats.n} (soit ${stats.pct}%).`);
+
+    const correctDelays = withSignal.filter(g =>
+      (g.lateSignal.momentum>0 && g.result==='above') || (g.lateSignal.momentum<0 && g.result==='below')
+    ).map(g=>g.lateSignal.secondsLeft);
+    const wrongDelays = withSignal.filter(g =>
+      !((g.lateSignal.momentum>0 && g.result==='above') || (g.lateSignal.momentum<0 && g.result==='below'))
+    ).map(g=>g.lateSignal.secondsLeft);
+
+    if(correctDelays.length){
+      const avg = correctDelays.reduce((a,b)=>a+b,0)/correctDelays.length;
+      lines.push(`Quand il avait raison, le signal apparaissait en moyenne ${avg.toFixed(0)} secondes avant la clôture.`);
+    }
+    if(wrongDelays.length){
+      const avg = wrongDelays.reduce((a,b)=>a+b,0)/wrongDelays.length;
+      lines.push(`Quand il s'est trompé, il apparaissait en moyenne ${avg.toFixed(0)} secondes avant la clôture.`);
+    }
+
+    if(stats.pct >= 65){
+      lines.push("→ Ce signal semble utile pour anticiper la clôture — mais à confirmer sur davantage de fenêtres avant d'en faire une règle.");
+    } else if(stats.pct <= 40){
+      lines.push("→ Ce signal s'est trompé plus souvent qu'il n'a eu raison sur cette session — mieux vaut ne pas s'y fier pour l'instant.");
+    } else {
+      lines.push("→ Pour l'instant, ce signal ne fait ni mieux ni pire que le hasard.");
+    }
+  }
+
+  // tendance de l'écart Binance/Chainlink à l'approche de la clôture
+  const first = CHECKPOINT_MARKS.find(m => gapLog.some(g=>g.gapCheckpoints[m]!==undefined));
+  const last = [...CHECKPOINT_MARKS].reverse().find(m => gapLog.some(g=>g.gapCheckpoints[m]!==undefined));
+  if(first && last && first!==last){
+    const avg = (mark)=>{
+      const vals = gapLog.map(g=>g.gapCheckpoints[mark]).filter(v=>v!==undefined).map(Math.abs);
+      return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
+    };
+    const avgFirst = avg(first), avgLast = avg(last);
+    if(avgFirst!==null && avgLast!==null){
+      const growing = avgLast > avgFirst*1.1;
+      const stable = avgLast < avgFirst*1.1 && avgLast > avgFirst*0.9;
+      lines.push(growing
+        ? `L'écart entre Binance et Chainlink a tendance à s'agrandir à l'approche de la clôture (encore ${last}s avant la fin) — reste prudent sur les toutes dernières secondes.`
+        : stable
+          ? "L'écart entre Binance et Chainlink reste globalement stable jusqu'à la clôture."
+          : "L'écart entre Binance et Chainlink a tendance à se resserrer à l'approche de la clôture."
+      );
+    }
+  }
+
+  if(gapLog.length < 10){
+    lines.push("Échantillon encore réduit (moins de 10 fenêtres) — à prendre comme une première tendance, pas comme une certitude.");
+  }
+
+  return lines;
+}
+
+function renderSummaryPanel(){
+  const panel = document.getElementById('summaryPanel');
+  panel.style.display = 'block';
+  const lines = generateHumanSummary();
+  panel.innerHTML = '<b style="color:#0ecb81;">📋 Résumé en langage simple</b><br>' + lines.map(l=>'<div style="margin-top:4px;">'+l+'</div>').join('');
+}
+document.getElementById('showSummary').onclick = renderSummaryPanel;
+
+function renderGapLogTable(){
+  const panel = document.getElementById('gapLogPanel');
+  if(gapLog.length === 0){ panel.style.display='none'; return; }
+  panel.style.display = 'block';
+  const stats = computeLateSignalStats();
+  const statsHtml = stats
+    ? `<div style="margin:6px 0;padding:6px 8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;">
+         Fiabilité du signal tardif Binance : <b style="color:${stats.pct>=60?'#0ecb81':stats.pct<=40?'#f6465d':'#eaecef'}">${stats.pct}%</b>
+         (${stats.correct}/${stats.n} fenêtre(s) où le signal a prédit correctement le côté du PTB à la clôture)
+       </div>`
+    : `<div style="margin:6px 0;font-size:11px;opacity:.7;">Pas encore assez de fenêtres avec signal tardif + résultat confirmé pour calculer une fiabilité.</div>`;
+  const rows = gapLog.slice(-15).reverse().map(g=>{
+    const cps = CHECKPOINT_MARKS.map(m=>g.gapCheckpoints[m]!==undefined ? g.gapCheckpoints[m].toFixed(3)+'%' : '—').join(' / ');
+    const resClass = g.result==='above' ? 'res-above' : g.result==='below' ? 'res-below' : '';
+    const resText = g.result==='above' ? 'Above PTB' : g.result==='below' ? 'Below PTB' : '—';
+    const sigText = g.lateSignal ? `${g.lateSignal.momentum>0?'▲':'▼'} ${(g.lateSignal.momentum*100).toFixed(3)}% @${g.lateSignal.secondsLeft}s` : '—';
+    return `<tr><td>${fmtTahiti(g.windowStart, false, true)}</td><td>${cps}</td><td>${g.finalGap!==null?g.finalGap.toFixed(3)+'%':'—'}</td><td>${sigText}</td><td class="${resClass}">${resText}</td></tr>`;
+  }).join('');
+  panel.innerHTML = `<b style="color:#7f95ff;">Journal écarts Binance/Chainlink (${gapLog.length} fenêtre(s))</b>
+    ${statsHtml}
+    <table class="gaplog"><thead><tr><th>Fenêtre</th><th>Écart @30/20/10/5/2s</th><th>Écart final</th><th>Signal tardif Binance</th><th>Résultat</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
+document.getElementById('exportLogs').onclick = ()=>{
+  const data = JSON.stringify(gapLog, null, 2);
+  const blob = new Blob([data], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'cryptor_gap_log_'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.json';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+// Ne remonte un "conseil" que s'il sort clairement du hasard (un coin-flip donnerait ~50%),
+// avec un échantillon suffisant. Sinon, rien à dire de fiable pour l'instant.
+const MIN_SAMPLE = 5;
+const NOTABLE_PCT_HIGH = 65; // au-delà : jugé comme une vraie récurrence
+const NOTABLE_PCT_LOW = 35;  // en-deçà : jugé comme une vraie stabilité (peu de retournements)
+
+function computeInsights(){
+  const insights = [];
+
+  // 1) retournement par rapport à un instant donné avant la clôture
+  for(const mark of CHECKPOINT_MARKS){
+    const withMark = sessionWindows.filter(w => mark in w.flips);
+    if(withMark.length < MIN_SAMPLE) continue;
+    const flips = withMark.filter(w => w.flips[mark]).length;
+    const pct = Math.round(flips/withMark.length*100);
+    if(pct >= NOTABLE_PCT_HIGH){
+      insights.push({strength: pct-50, text: `La tendance s'inverse dans les ${mark} dernières secondes sur ${flips}/${withMark.length} fenêtres (${pct}%).`});
+    } else if(pct <= NOTABLE_PCT_LOW){
+      const stablePct = 100-pct;
+      insights.push({strength: stablePct-50, text: `La tendance se maintient dans les ${mark} dernières secondes sur ${withMark.length-flips}/${withMark.length} fenêtres (${stablePct}%) — peu de retournements tardifs.`});
+    }
+  }
+
+  // 2) fréquence des va-et-vient (nombre de fois où le prix retraverse le Price to Beat dans la fenêtre)
+  if(sessionWindows.length >= MIN_SAMPLE){
+    const avgCrossings = sessionWindows.reduce((a,w)=>a+w.crossings,0) / sessionWindows.length;
+    if(avgCrossings >= 1.5){
+      insights.push({strength: (avgCrossings-1)*20, text: `La courbe retraverse le Price to Beat en moyenne ${avgCrossings.toFixed(1)} fois par fenêtre — mouvements de va-et-vient fréquents, tendance peu stable.`});
+    } else if(avgCrossings <= 0.3){
+      insights.push({strength: (1-avgCrossings)*20, text: `Une fois la direction engagée, la courbe retraverse rarement le Price to Beat (${avgCrossings.toFixed(1)} fois/fenêtre en moyenne) — les mouvements sont généralement décisifs.`});
+    }
+  }
+
+  // 3) regroupement du timing du dernier retournement (si les retournements tardifs arrivent toujours
+  // à peu près au même moment, c'est plus exploitable qu'un timing aléatoire)
+  const lateFlips = sessionWindows
+    .map(w => w.lastFlipSecondsLeft)
+    .filter(s => s !== null && s <= 30);
+  if(lateFlips.length >= MIN_SAMPLE){
+    const mean = lateFlips.reduce((a,b)=>a+b,0) / lateFlips.length;
+    const variance = lateFlips.reduce((a,b)=>a+(b-mean)*(b-mean),0) / lateFlips.length;
+    const stdev = Math.sqrt(variance);
+    if(stdev <= 5){
+      insights.push({strength: (30-stdev)*2, text: `Quand un retournement tardif se produit, il arrive presque toujours autour de ${mean.toFixed(0)}s avant la clôture (±${stdev.toFixed(1)}s, sur ${lateFlips.length} cas).`});
+    }
+  }
+
+  insights.sort((a,b)=>b.strength-a.strength);
+  return insights.slice(0, 3);
+}
+
+function updateInsightsPanel(){
+  const panel = document.getElementById('insightsPanel');
+  if(sessionWindows.length < 3){
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'block';
+  const insights = computeInsights();
+  let html = '<b style="color:#7f95ff;">Conseils (session en cours)</b><br>';
+  if(insights.length === 0){
+    html += `Pas encore de récurrence claire détectée (${sessionWindows.length} fenêtre(s) observée(s)) — les mouvements observés jusqu'ici ressemblent au hasard.`;
+  } else {
+    html += insights.map(i=>i.text).join('<br>');
+    html += `<br><span style="opacity:.65;font-size:10px;">Basé sur ${sessionWindows.length} fenêtre(s) observée(s) depuis l'ouverture de Cryptor — échantillon réduit, purement informatif, ne garantit rien pour les fenêtres à venir.</span>`;
+  }
+  panel.innerHTML = html;
+}
+
+function tickCountdown(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  const mm = String(Math.floor(info.secondsLeft/60)).padStart(2,'0');
+  const ss = String(info.secondsLeft%60).padStart(2,'0');
+  p2bCountdown.textContent = '⏱ '+mm+':'+ss;
+  lastWindowStart = info.start;
+  tryAutoFillPriceToBeat();
+  updateWindowTracking();
+}
+tickCountdown();
+function scheduleNextTick(){
+  const delay = 1000 - (now() % 1000); // toujours recalé pile sur la seconde réelle suivante (horloge synchronisée)
+  setTimeout(()=>{ tickCountdown(); scheduleNextTick(); }, delay);
+}
+scheduleNextTick();
+
+
+// ---- afficher/masquer les MA7/25/99 ----
+let showMA = true;
+document.getElementById('showMA').addEventListener('change', (e)=>{
+  showMA = e.target.checked;
+  draw();
+});
+
+function drawTarget(context, target, minP, maxP, padLeft, padRight, padTop, plotH, w){
+  if(target===null || target===undefined || isNaN(target)) return;
+  const range = (maxP-minP)||1;
+  const frac = (target-minP)/range; // 0 = bottom, 1 = top
+  context.save();
+  context.strokeStyle = '#ffb020';
+  context.fillStyle = '#ffb020';
+  context.font = '10px -apple-system,sans-serif';
+  context.textAlign = 'left';
+  if(frac>=0 && frac<=1){
+    const y = padTop + plotH - frac*plotH;
+    context.setLineDash([5,4]); context.lineWidth=1.3;
+    context.beginPath(); context.moveTo(padLeft,y); context.lineTo(w-padRight,y); context.stroke();
+    context.setLineDash([]);
+    context.fillText('Target '+target.toFixed(2), padLeft+4, y-4);
+  } else if(frac>1){
+    const x = padLeft+22, y = padTop+10;
+    context.beginPath();
+    context.moveTo(x,y); context.lineTo(x-6,y+11); context.lineTo(x+6,y+11); context.closePath();
+    context.fill();
+    context.fillText('Target '+target.toFixed(2), x+11, y+9);
+  } else {
+    const x = padLeft+22, y = padTop+plotH-10;
+    context.beginPath();
+    context.moveTo(x,y); context.lineTo(x-6,y-11); context.lineTo(x+6,y-11); context.closePath();
+    context.fill();
+    context.fillText('Target '+target.toFixed(2), x+11, y-4);
+  }
+  context.restore();
+}
+
+function aggregateCandles(base, bucketSeconds){
+  if(base.length===0) return [];
+  const bucketMs = bucketSeconds*1000;
+  const map = new Map();
+  for(const c of base){
+    const bucket = Math.floor(c.time/bucketMs)*bucketMs;
+    if(!map.has(bucket)) map.set(bucket, []);
+    map.get(bucket).push(c);
+  }
+  const buckets = [...map.keys()].sort((a,b)=>a-b);
+  const out = buckets.map(b=>{
+    const items = map.get(b);
+    return {
+      time:b,
+      open:items[0].open,
+      close:items[items.length-1].close,
+      high:Math.max(...items.map(x=>x.high)),
+      low:Math.min(...items.map(x=>x.low)),
+      isHistory:true,
+    };
+  });
+  return applyContinuity(out);
+}
+
+async function loadHistory(seconds){
+  const cacheKey = sourceMode+':'+seconds;
+  if(historyCache[cacheKey]) return historyCache[cacheKey];
+
+  if(sourceMode==='chainlink'){
+    try{
+      if(!chainlinkRawHistory){
+        chainlinkRawHistory = await fetchChainlinkOnchainHistory(100);
+      }
+      const candles = bucketPoints(chainlinkRawHistory, seconds);
+      if(candles.length < 3) throw new Error('historique trop clairsemé');
+      historyCache[cacheKey] = candles;
+      return candles;
+    }catch(e){
+      errEl.textContent = 'Historique Chainlink on-chain indisponible ('+e.message+') — bascule automatique sur Binance en secours.';
+      sourceMode = 'binance';
+      sourceSelect.value = 'binance';
+      document.getElementById('sourceNote').textContent = 'Historique via Binance BTC/USDT (secours automatique — Chainlink on-chain injoignable). Bougies récentes = Chainlink live (RTDS). Heures en Tahiti (UTC-10).';
+      return loadHistory(seconds);
+    }
+  }
+
+  // Binance
+  try{
+    if(seconds < 60){
+      if(!base1sCache){
+        const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1s&limit=1000`);
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        base1sCache = data.map(d=>({time:d[0],open:parseFloat(d[1]),high:parseFloat(d[2]),low:parseFloat(d[3]),close:parseFloat(d[4])}));
+      }
+      const candles = applyContinuity(seconds===1 ? base1sCache.map(c=>({...c,isHistory:true})) : aggregateCandles(base1sCache, seconds));
+      historyCache[cacheKey] = candles;
+      return candles;
+    } else {
+      const interval = BINANCE_INTERVAL[seconds];
+      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=500`);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const data = await res.json();
+      const candles = data.map(d=>({time:d[0],open:parseFloat(d[1]),high:parseFloat(d[2]),low:parseFloat(d[3]),close:parseFloat(d[4]),isHistory:true}));
+      historyCache[cacheKey] = candles;
+      return candles;
+    }
+  }catch(e){
+    errEl.textContent = 'Historique indisponible ('+e.message+') — affichage en direct uniquement.';
+    return [];
+  }
+}
+
+async function fetchVolumeHistory(seconds){
+  if(volumeCache[seconds]) return volumeCache[seconds];
+  try{
+    if(seconds < 60){
+      if(!vol1sCache){
+        const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1s&limit=1000`);
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        vol1sCache = data.map(d=>({time:d[0], vol:parseFloat(d[5])}));
+      }
+      const bucketMs = seconds*1000;
+      const map = new Map();
+      for(const p of vol1sCache){
+        const b = Math.floor(p.time/bucketMs)*bucketMs;
+        map.set(b, (map.get(b)||0)+p.vol);
+      }
+      const arr = [...map.entries()].map(([time,vol])=>({time,vol})).sort((a,b)=>a.time-b.time);
+      volumeCache[seconds] = arr;
+      return arr;
+    } else {
+      const interval = BINANCE_INTERVAL[seconds] || '1h';
+      const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=500`);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const data = await res.json();
+      const arr = data.map(d=>({time:d[0], vol:parseFloat(d[5])}));
+      volumeCache[seconds] = arr;
+      return arr;
+    }
+  }catch(e){
+    console.error('volume indisponible', e);
+    return [];
+  }
+}
+async function refreshVolumes(seconds){
+  currentVolumes = await fetchVolumeHistory(seconds);
+}
+
+const chartCanvas = document.getElementById('chart');
+const timeCanvas = document.getElementById('timeAxis');
+const volCanvas = document.getElementById('volChart');
+const projCanvas = document.getElementById('projChart');
+const ctx = chartCanvas.getContext('2d');
+const tctx = timeCanvas.getContext('2d');
+const vctx = volCanvas.getContext('2d');
+const pctx = projCanvas.getContext('2d');
+const errEl = document.getElementById('err');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+
+function resizeCanvases(){
+  const ratio = window.devicePixelRatio || 1;
+  const cw = chartCanvas.parentElement.clientWidth - 20;
+  chartCanvas.width = cw*ratio; chartCanvas.style.width = cw+'px';
+  chartCanvas.height = chartHeight*ratio; chartCanvas.style.height = chartHeight+'px';
+  chartCanvas.getContext('2d').setTransform(ratio,0,0,ratio,0,0);
+
+  const tw = timeCanvas.parentElement.clientWidth - 20;
+  timeCanvas.width = tw*ratio; timeCanvas.style.width = tw+'px';
+  timeCanvas.getContext('2d').setTransform(ratio,0,0,ratio,0,0);
+
+  const vw = volCanvas.parentElement.clientWidth - 20;
+  volCanvas.width = vw*ratio; volCanvas.style.width = vw+'px';
+  volCanvas.height = volHeight*ratio; volCanvas.style.height = volHeight+'px';
+  volCanvas.getContext('2d').setTransform(ratio,0,0,ratio,0,0);
+  const pw = projCanvas.parentElement.clientWidth - 20;
+  projCanvas.width = pw*ratio; projCanvas.style.width = pw+'px';
+  projCanvas.getContext('2d').setTransform(ratio,0,0,ratio,0,0);
+}
+window.addEventListener('resize', ()=>{ resizeCanvases(); draw(); drawProjection(); });
+
+// ---- redimensionner le graphique principal (glisser la poignée) ----
+const chartResize = document.getElementById('chartResize');
+let chartDragging=false, chartDragStartY=0, chartDragStartHeight=chartHeight;
+chartResize.addEventListener('mousedown', (e)=>{
+  chartDragging = true; chartDragStartY = e.clientY; chartDragStartHeight = chartHeight;
+  chartResize.classList.add('dragging');
+});
+window.addEventListener('mousemove', (e)=>{
+  if(!chartDragging) return;
+  const delta = e.clientY - chartDragStartY;
+  chartHeight = Math.min(CHART_HEIGHT_MAX, Math.max(CHART_HEIGHT_MIN, Math.round(chartDragStartHeight + delta)));
+  resizeCanvases();
+  draw();
+});
+window.addEventListener('mouseup', ()=>{ chartDragging = false; chartResize.classList.remove('dragging'); });
+
+// ---- zoom ----
+chartCanvas.addEventListener('wheel', (e)=>{
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 1.15 : 0.87;
+  visibleCount = Math.round(Math.min(MAX_VISIBLE, Math.max(MIN_VISIBLE, visibleCount*factor)));
+  draw();
+}, {passive:false});
+
+// glisser sur l'axe du temps (en bas) : gauche = compresser (bougies plus étroites), droite = dilater
+let taDragging=false, taStartX=0, taStartVisible=visibleCount;
+timeCanvas.addEventListener('mousedown', (e)=>{
+  taDragging = true; taStartX = e.clientX; taStartVisible = visibleCount;
+});
+window.addEventListener('mousemove', (e)=>{
+  if(!taDragging) return;
+  const delta = e.clientX - taStartX;
+  const factor = Math.exp(-delta/220);
+  let nv = Math.round(taStartVisible*factor);
+  nv = Math.min(MAX_VISIBLE, Math.max(MIN_VISIBLE, nv));
+  if(nv !== visibleCount){ visibleCount = nv; draw(); }
+});
+window.addEventListener('mouseup', ()=>{ taDragging = false; });
+let taTouchStartX=0, taTouchStartVisible=visibleCount;
+timeCanvas.addEventListener('touchstart', (e)=>{ taTouchStartX=e.touches[0].clientX; taTouchStartVisible=visibleCount; });
+timeCanvas.addEventListener('touchmove', (e)=>{
+  const delta = e.touches[0].clientX - taTouchStartX;
+  const factor = Math.exp(-delta/220);
+  let nv = Math.round(taTouchStartVisible*factor);
+  nv = Math.min(MAX_VISIBLE, Math.max(MIN_VISIBLE, nv));
+  if(nv !== visibleCount){ visibleCount = nv; draw(); }
+}, {passive:true});
+
+// ---- redimensionner le panneau volume (glisser la poignée) ----
+const volResize = document.getElementById('volResize');
+let volDragging=false, volDragStartY=0, volDragStartHeight=volHeight;
+volResize.addEventListener('mousedown', (e)=>{
+  volDragging = true; volDragStartY = e.clientY; volDragStartHeight = volHeight;
+  volResize.classList.add('dragging');
+});
+window.addEventListener('mousemove', (e)=>{
+  if(!volDragging) return;
+  const delta = e.clientY - volDragStartY;
+  volHeight = Math.min(VOL_HEIGHT_MAX, Math.max(VOL_HEIGHT_MIN, Math.round(volDragStartHeight + delta)));
+  resizeCanvases();
+  draw();
+});
+window.addEventListener('mouseup', ()=>{ volDragging = false; volResize.classList.remove('dragging'); });
+
+// ---- info-bulle au survol des barres de volume ----
+const volTooltip = document.getElementById('volTooltip');
+function hideVolTooltip(){ volTooltip.style.display = 'none'; }
+volCanvas.addEventListener('mousemove', (e)=>{
+  const all = buildCandles(currentSec);
+  if(all.length===0){ hideVolTooltip(); return; }
+  const {candles, padLeft, candleW, offsetPx} = computeVisibleWindow(all);
+  if(candles.length===0){ hideVolTooltip(); return; }
+  const rect = volCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const raw = (x - padLeft + offsetPx)/candleW;
+  const j = Math.round(raw - 0.5);
+  if(j<0 || j>=candles.length){ hideVolTooltip(); return; }
+  const c = candles[j];
+  const volMap = new Map(currentVolumes.map(v=>[v.time, v.vol]));
+  const vol = volMap.get(c.time)||0;
+  const up = c.close>=c.open;
+  volTooltip.style.display = 'block';
+  volTooltip.style.left = (e.clientX+14)+'px';
+  volTooltip.style.top = (e.clientY-10)+'px';
+  volTooltip.innerHTML = '<b style="color:'+(up?'#0ecb81':'#f6465d')+'">'+fmtTahiti(c.time,true,currentSec<60)+'</b><br>Volume: '+vol.toLocaleString('fr-FR',{maximumFractionDigits:2})+' BTC<br>Clôture: '+c.close.toFixed(2);
+});
+volCanvas.addEventListener('mouseleave', hideVolTooltip);
+
+// ---- smooth proportional drag/pan (left/middle) + vertical price-scale drag (right axis gutter) ----
+let dragging=false, dragStartX=0, dragStartOffset=0, dragStartY=0, dragStartCenterOffset=0;
+let yDragging=false, yDragStartY=0, yDragStartFactor=1;
+const AXIS_GUTTER = 64; // must match padRight used in draw()
+chartCanvas.setAttribute('draggable','false');
+chartCanvas.addEventListener('mousedown', (e)=>{
+  e.preventDefault();
+  const rect = chartCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const w = chartCanvas.clientWidth;
+  if(x >= w-AXIS_GUTTER){
+    // clicked in the price-axis gutter: vertical zoom drag (stretch/compress scale)
+    yDragging = true;
+    yDragStartY = e.clientY;
+    yDragStartFactor = priceScaleFactor;
+    chartCanvas.style.cursor = 'ns-resize';
+  } else {
+    // clicked in the plot area: free pan (horizontal = time, vertical = price)
+    dragging=true;
+    dragStartX=e.clientX; dragStartOffset=panOffset;
+    dragStartY=e.clientY; dragStartCenterOffset=priceCenterOffset;
+    chartCanvas.style.cursor='grabbing';
+  }
+});
+window.addEventListener('mouseup', ()=>{
+  dragging=false; yDragging=false;
+  chartCanvas.style.cursor='crosshair';
+});
+window.addEventListener('mousemove', (e)=>{
+  if(yDragging){
+    const deltaY = e.clientY - yDragStartY; // down = expand range (zoom out), up = compress (zoom in)
+    const factor = yDragStartFactor * Math.exp(deltaY/220);
+    priceScaleFactor = Math.min(PRICE_SCALE_MAX, Math.max(PRICE_SCALE_MIN, factor));
+    draw();
+    drawProjection();
+    return;
+  }
+  if(dragging){
+    const all = buildCandles(currentSec);
+    const w = chartCanvas.clientWidth;
+    const padLeft=8, padRight=64;
+    const candleW = (w-padLeft-padRight)/visibleCount;
+    const deltaCandles = (e.clientX-dragStartX)/candleW; // fractional -> proportional/smooth
+    const maxOffset = Math.max(0, all.length-visibleCount);
+    panOffset = Math.min(maxOffset, Math.max(0, dragStartOffset + deltaCandles));
+
+    // vertical pan: convert pixel delta to price delta using the last known scale
+    if(lastGeom && lastGeom.plotH){
+      const deltaYpx = e.clientY - dragStartY;
+      priceCenterOffset = dragStartCenterOffset + deltaYpx * (lastGeom.range/lastGeom.plotH);
+    }
+    draw();
+    return;
+  }
+  // hover crosshair (only when over the canvas)
+  const rect = chartCanvas.getBoundingClientRect();
+  if(e.clientX>=rect.left && e.clientX<=rect.right && e.clientY>=rect.top && e.clientY<=rect.bottom){
+    hoverPx = {x:e.clientX-rect.left, y:e.clientY-rect.top};
+    const w = chartCanvas.clientWidth;
+    chartCanvas.style.cursor = (hoverPx.x >= w-AXIS_GUTTER) ? 'ns-resize' : 'crosshair';
+  } else {
+    hoverPx = null;
+  }
+  draw();
+});
+chartCanvas.addEventListener('mouseleave', ()=>{ if(!dragging && !yDragging){ hoverPx=null; draw(); } });
+chartCanvas.addEventListener('dblclick', (e)=>{
+  const rect = chartCanvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const w = chartCanvas.clientWidth;
+  if(x >= w-AXIS_GUTTER){ priceScaleFactor = 1; }
+  else { priceCenterOffset = 0; }
+  draw(); drawProjection();
+});
+
+let touchStartX=0, touchStartOffset=0;
+chartCanvas.addEventListener('touchstart', (e)=>{ touchStartX=e.touches[0].clientX; touchStartOffset=panOffset; });
+chartCanvas.addEventListener('touchmove', (e)=>{
+  const all = buildCandles(currentSec);
+  const w = chartCanvas.clientWidth;
+  const padLeft=8, padRight=64;
+  const candleW = (w-padLeft-padRight)/visibleCount;
+  const deltaCandles = (e.touches[0].clientX-touchStartX)/candleW;
+  const maxOffset = Math.max(0, all.length-visibleCount);
+  panOffset = Math.min(maxOffset, Math.max(0, touchStartOffset + deltaCandles));
+  draw();
+}, {passive:true});
+
+function detectSignal(all){
+  if(all.length < 10) return null;
+  const lookback = Math.min(8, all.length-1);
+  const recent = all.slice(-(lookback+1));
+  const startClose = recent[0].close, endClose = recent[recent.length-1].close;
+  if(!startClose) return null;
+  const momentum = (endClose-startClose)/startClose;
+
+  const rets = [];
+  for(let i=1;i<recent.length;i++){
+    if(recent[i-1].close) rets.push((recent[i].close-recent[i-1].close)/recent[i-1].close);
+  }
+  const avgAbsRet = rets.length ? rets.reduce((a,b)=>a+Math.abs(b),0)/rets.length : 0;
+  const threshold = Math.max(0.0015, avgAbsRet*2.2);
+
+  const volMap = new Map(currentVolumes.map(v=>[v.time, v.vol]));
+  const volSeries = recent.map(c=>volMap.get(c.time)||0);
+  const lastVol = volSeries[volSeries.length-1];
+  const priorVols = volSeries.slice(0,-1).filter(v=>v>0);
+  const avgVol = priorVols.length ? priorVols.reduce((a,b)=>a+b,0)/priorVols.length : 0;
+  const volRatio = avgVol>0 ? lastVol/avgVol : 1;
+
+  // seuil critique : mouvement + volume nettement plus extrêmes que le seuil normal -> priorité absolue
+  const criticalThreshold = threshold*2.5;
+  if(momentum > criticalThreshold && volRatio > 2.2){
+    return {type:'critical-up', reason:`hausse brutale de ${(momentum*100).toFixed(2)}% sur les ${lookback} dernières bougies, volume ${volRatio.toFixed(1)}× la moyenne récente`};
+  }
+  if(momentum < -criticalThreshold && volRatio > 2.2){
+    return {type:'critical-down', reason:`chute brutale de ${(momentum*100).toFixed(2)}% sur les ${lookback} dernières bougies, volume ${volRatio.toFixed(1)}× la moyenne récente`};
+  }
+  if(momentum > threshold && volRatio > 1.3){
+    return {type:'pump', reason:`hausse de ${(momentum*100).toFixed(2)}% sur les ${lookback} dernières bougies, volume ${volRatio.toFixed(1)}× la moyenne récente`};
+  }
+  if(momentum < -threshold && volRatio > 1.3){
+    return {type:'dump', reason:`chute de ${(momentum*100).toFixed(2)}% sur les ${lookback} dernières bougies, volume ${volRatio.toFixed(1)}× la moyenne récente`};
+  }
+  return null;
+}
+
+let alertTimeout = null;
+function showAlert(type, reason){
+  const el = document.getElementById('alertPopup');
+  const content = document.getElementById('alertContent');
+  const cls = type==='critical-up' ? 'pump critical' : type==='critical-down' ? 'dump critical' : type;
+  el.className = 'alertpop show '+cls;
+  const titles = {
+    'pump':'⚠ PUMP IMMINENT',
+    'dump':'⚠ DUMP IMMINENT',
+    'warn':'⏱ PRICE TO BEAT À METTRE À JOUR',
+    'critical-up':'🚨 HAUSSE IMMINENTE, PRENEZ VOS DISPOSITIONS',
+    'critical-down':'🚨 CHUTE IMMINENTE, PRENEZ VOS DISPOSITIONS',
+    'gap':'⚡ ÉCART BINANCE / CHAINLINK',
+  };
+  content.innerHTML = '<b>'+titles[type]+'</b>'+reason+(type==='warn' || type==='gap' ? '' : ' — estimation heuristique, pas un conseil financier.');
+  clearTimeout(alertTimeout);
+  if(type !== 'warn'){
+    alertTimeout = setTimeout(()=>{ el.className='alertpop'; }, 20000);
+  }
+  // le message 'warn' (Price to Beat périmé) reste affiché tant que le Target n'a pas été mis à jour
+}
+document.getElementById('alertClose').addEventListener('click', ()=>{
+  // ferme juste l'alerte affichée ; ne bloque jamais les prochaines (ex: rappel Price to Beat à la fenêtre suivante)
+  document.getElementById('alertPopup').className = 'alertpop';
+  clearTimeout(alertTimeout);
+});
+
+
+function connect(){
+  try{ ws = new WebSocket('wss://ws-live-data.polymarket.com'); }
+  catch(e){ errEl.textContent = 'Impossible d\'ouvrir la connexion WebSocket: '+e.message; return; }
+
+  ws.onopen = ()=>{
+    statusDot.className = 'status live';
+    statusText.textContent = 'connecté';
+    errEl.textContent = '';
+    ws.send(JSON.stringify({action:'subscribe', subscriptions:[{topic:'crypto_prices_chainlink', type:'*', filters:JSON.stringify({symbol:'btc/usd'})}]}));
+    pingTimer = setInterval(()=>{ if(ws.readyState===WebSocket.OPEN) ws.send('PING'); }, 5000);
+  };
+  ws.onmessage = (ev)=>{
+    let msg; try{ msg = JSON.parse(ev.data); }catch(e){ return; }
+    if(msg.topic==='crypto_prices_chainlink' && msg.payload && msg.payload.symbol==='btc/usd'){
+      const t = msg.payload.timestamp || msg.timestamp || now();
+      const v = msg.payload.value;
+      if(typeof v === 'number'){
+        ticks.push({t,v});
+        if(ticks.length>20000) ticks.shift();
+        if(autoRecenter) panOffset = 0;
+
+        tryAutoFillPriceToBeat();
+
+        updateHeader();
+        draw();
+        drawProjection();
+        const sig = detectSignal(buildCandles(currentSec));
+        if(sig) showAlert(sig.type, sig.reason);
+      }
+    }
+  };
+  ws.onerror = ()=>{ statusDot.className='status down2'; statusText.textContent='erreur'; errEl.textContent='Erreur de connexion au flux Polymarket RTDS.'; };
+  ws.onclose = ()=>{ statusDot.className='status'; statusText.textContent='déconnecté — reconnexion…'; clearInterval(pingTimer); setTimeout(connect,2000); };
+}
+
+// ---- Flux Binance live (affichage), en parallèle de Chainlink (résolution) ----
+// Sert à repérer les mouvements tôt (Binance réagit vite aux gros ordres) ; seul Chainlink compte
+// pour la résolution du marché Polymarket. L'écart entre les deux est affiché et journalisé.
+function connectBinance(){
+  try{ binanceWs = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade'); }
+  catch(e){ return; }
+  binanceWs.onmessage = (ev)=>{
+    let msg; try{ msg = JSON.parse(ev.data); }catch(e){ return; }
+    const v = parseFloat(msg.p);
+    const q = parseFloat(msg.q);
+    if(!isNaN(v)){
+      binanceTicks.push({t:now(), v, q:isNaN(q)?0:q});
+      if(binanceTicks.length>20000) binanceTicks.shift();
+      updateGapDisplay();
+      detectBinanceLateMove();
+    }
+  };
+  binanceWs.onerror = ()=>{ /* silencieux : si Binance est bloqué (région), l'écart reste juste indisponible */ };
+  binanceWs.onclose = ()=>{ setTimeout(connectBinance, 3000); };
+}
+connectBinance();
+
+function currentGapPct(){
+  if(ticks.length===0 || binanceTicks.length===0) return null;
+  const cl = ticks[ticks.length-1].v;
+  const bn = binanceTicks[binanceTicks.length-1].v;
+  return (bn-cl)/cl*100;
+}
+
+const priceBinanceEl = document.getElementById('priceBinance');
+const gapDisplayEl = document.getElementById('gapDisplay');
+function updateGapDisplay(){
+  if(binanceTicks.length){
+    priceBinanceEl.textContent = binanceTicks[binanceTicks.length-1].v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  }
+  const gap = currentGapPct();
+  if(gap===null) return;
+  gapDisplayEl.textContent = (gap>=0?'+':'')+gap.toFixed(4)+'% écart';
+  gapDisplayEl.className = 'chg '+(gap>=0?'up':'down');
+
+  const threshold = parseFloat(document.getElementById('gapThreshold').value)||0.05;
+  if(Math.abs(gap) >= threshold && (now()-lastGapAlertAt) > 20000){
+    lastGapAlertAt = now();
+    showAlert('gap', ` Binance/Chainlink: ${(gap>=0?'+':'')}${gap.toFixed(4)}% — Binance ${gap>=0?'au-dessus':'en-dessous'} de Chainlink`);
+  }
+}
+
+// ---- Détecteur de mouvement brusque Binance dans les toutes dernières secondes de la fenêtre ----
+// Repère un signe avant-coureur (Binance réagit plus vite que Chainlink) : mouvement rapide + volume
+// anormal sur les 5 dernières secondes de trades, uniquement quand il reste ≤15s dans la fenêtre 5min.
+let lastBinanceLateAlertWindow = null;
+let lateSignalFlags = {}; // windowStart -> {momentum, secondsLeft} si un signal tardif a été détecté
+const BINANCE_LATE_MOVE_THRESHOLD = 0.0008; // ~0.08% en 5s = mouvement rapide
+function detectBinanceLateMove(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  if(info.secondsLeft > 15){ lastBinanceLateAlertWindow = null; return; }
+  if(lastBinanceLateAlertWindow === info.start) return; // une seule alerte par fenêtre
+
+  const cutoff = now() - 5000;
+  const recent = binanceTicks.filter(t=>t.t >= cutoff);
+  if(recent.length < 5) return;
+
+  const startV = recent[0].v, endV = recent[recent.length-1].v;
+  const momentum = (endV-startV)/startV;
+  const qtySum = recent.reduce((a,t)=>a+t.q, 0);
+  const baseline = binanceTicks.filter(t=>t.t >= cutoff-30000 && t.t < cutoff);
+  const baselineQtyAvg5s = baseline.length ? (baseline.reduce((a,t)=>a+t.q,0)/baseline.length)*recent.length : qtySum;
+  const volSpike = baselineQtyAvg5s>0 ? qtySum/baselineQtyAvg5s : 1;
+
+  if(Math.abs(momentum) >= BINANCE_LATE_MOVE_THRESHOLD){
+    lastBinanceLateAlertWindow = info.start;
+    lateSignalFlags[info.start] = {momentum, secondsLeft: info.secondsLeft};
+    const dir = momentum>0 ? 'hausse' : 'baisse';
+    showAlert(momentum>0?'critical-up':'critical-down',
+      ` ${dir} rapide détectée sur Binance en fin de fenêtre (${(momentum*100).toFixed(3)}% en 5s, volume ${volSpike.toFixed(1)}×, ${info.secondsLeft}s restantes)`);
+  }
+}
+
+function buildLiveCandles(seconds){
+  if(ticks.length===0) return [];
+  const bucketMs = seconds*1000;
+  const map = new Map();
+  for(const tk of ticks){
+    const bucket = Math.floor(tk.t/bucketMs)*bucketMs;
+    if(!map.has(bucket)) map.set(bucket, []);
+    map.get(bucket).push(tk.v);
+  }
+  const buckets=[...map.keys()].sort((a,b)=>a-b);
+  const out = buckets.map(b=>{
+    const vals=map.get(b);
+    return {time:b, open:vals[0], close:vals[vals.length-1], high:Math.max(...vals), low:Math.min(...vals), isHistory:false};
+  });
+  return applyContinuity(out);
+}
+
+function buildCandles(seconds){
+  const hist = historyCache[sourceMode+':'+seconds] || [];
+  const live = buildLiveCandles(seconds);
+  if(live.length===0) return hist;
+  const firstLiveTime = live[0].time;
+  const histFiltered = hist.filter(c=>c.time<firstLiveTime);
+  return [...histFiltered, ...live];
+}
+
+function updateHeader(){
+  if(ticks.length===0) return;
+  const last = ticks[ticks.length-1];
+  const priceEl = document.getElementById('price');
+  const chgEl = document.getElementById('chg');
+  const first = ticks[0];
+  const up = last.v >= (ticks.length>1?ticks[ticks.length-2].v:last.v);
+  priceEl.textContent = last.v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  priceEl.className = 'price '+(up?'up':'down');
+  const pct = ((last.v-first.v)/first.v*100);
+  chgEl.textContent = (pct>=0?'+':'')+pct.toFixed(3)+'% (depuis ouverture page)';
+  chgEl.className = 'chg '+(pct>=0?'up':'down');
+}
+
+function fmtTahiti(ms, withDate, withSeconds){
+  const d = new Date(ms);
+  const opts = {timeZone:'Pacific/Tahiti', hour:'2-digit', minute:'2-digit'};
+  if(withSeconds) opts.second='2-digit';
+  if(withDate){ opts.day='2-digit'; opts.month='2-digit'; }
+  return d.toLocaleString('fr-FR', opts);
+}
+
+function linreg(values){
+  const n=values.length, xs=values.map((_,i)=>i);
+  const xMean=xs.reduce((a,b)=>a+b,0)/n, yMean=values.reduce((a,b)=>a+b,0)/n;
+  let num=0,den=0;
+  for(let i=0;i<n;i++){ num+=(xs[i]-xMean)*(values[i]-yMean); den+=(xs[i]-xMean)**2; }
+  const slope = den===0?0:num/den;
+  return {slope, intercept:yMean-slope*xMean};
+}
+function computeATR(cs, period){
+  if(cs.length<period+1) return null;
+  let trs=[];
+  for(let i=cs.length-period;i<cs.length;i++){
+    const c=cs[i], p=cs[i-1];
+    trs.push(Math.max(c.high-c.low, Math.abs(c.high-p.close), Math.abs(c.low-p.close)));
+  }
+  return trs.reduce((a,b)=>a+b,0)/trs.length;
+}
+function computeSMA(closes, period){
+  const out = new Array(closes.length).fill(null);
+  let sum=0;
+  for(let i=0;i<closes.length;i++){
+    sum += closes[i];
+    if(i>=period) sum -= closes[i-period];
+    if(i>=period-1) out[i] = sum/period;
+  }
+  return out;
+}
+function computeSR(all, lookback){
+  const arr = all.slice(-lookback);
+  if(arr.length < 7) return {support:null, resist:null};
+  const lastClose = arr[arr.length-1].close;
+  const swingHighs = [], swingLows = [];
+  for(let i=2;i<arr.length-2;i++){
+    const c = arr[i];
+    const isHigh = c.high >= arr[i-1].high && c.high >= arr[i-2].high && c.high >= arr[i+1].high && c.high >= arr[i+2].high;
+    const isLow = c.low <= arr[i-1].low && c.low <= arr[i-2].low && c.low <= arr[i+1].low && c.low <= arr[i+2].low;
+    if(isHigh) swingHighs.push(c.high);
+    if(isLow) swingLows.push(c.low);
+  }
+  const resistCandidates = swingHighs.filter(v=>v>lastClose).sort((a,b)=>a-b);
+  const supportCandidates = swingLows.filter(v=>v<lastClose).sort((a,b)=>b-a);
+  return {
+    support: supportCandidates.length ? supportCandidates[0] : Math.min(...arr.map(c=>c.low)),
+    resist: resistCandidates.length ? resistCandidates[0] : Math.max(...arr.map(c=>c.high)),
+  };
+}
+
+function computeProjection(all){
+  if(all.length < 10) return null;
+  const N = Math.min(30, all.length);
+  const recent = all.slice(-N);
+  const closes = recent.map(c=>c.close);
+  const {slope, intercept} = linreg(closes);
+  const lastClose = closes[closes.length-1];
+  const atr = computeATR(all.slice(-Math.min(50, all.length)), Math.min(14, all.length-1)) || (lastClose*0.001);
+  const HORIZON = N;
+  const path = [];
+  for(let i=0;i<=HORIZON;i++){
+    const x = N-1+i;
+    const mid = intercept + slope*x;
+    const spread = atr * Math.sqrt(i+1) * 1.2;
+    path.push({mid, upper:mid+spread, lower:mid-spread});
+  }
+  const projClose = intercept + slope*(N-1+HORIZON);
+  const projPct = ((projClose-lastClose)/lastClose*100);
+  return {N, HORIZON, closes, path, projClose, projPct, lastClose};
+}
+
+function computeVisibleWindow(all){
+  const w = chartCanvas.clientWidth || 800;
+  const padLeft=8, padRight=64;
+  const candleW = (w-padLeft-padRight)/visibleCount;
+  const maxOffset = Math.max(0, all.length-visibleCount);
+  panOffset = Math.min(panOffset, maxOffset);
+  const endIdxFloat = all.length - panOffset;
+  const startIdxFloat = endIdxFloat - visibleCount;
+  const startIdxInt = Math.max(0, Math.floor(startIdxFloat));
+  const endIdxInt = Math.min(all.length, Math.ceil(endIdxFloat));
+  return {startIdxInt, endIdxInt, candles: all.slice(startIdxInt, endIdxInt), offsetPx:(startIdxFloat-startIdxInt)*candleW, candleW, padLeft, padRight};
+}
+
+function computeRawPriceRange(all){
+  if(all.length===0) return {minP:0, maxP:1};
+  const {candles, startIdxInt, endIdxInt} = computeVisibleWindow(all);
+  const closesAll = all.map(c=>c.close);
+  const ma7 = computeSMA(closesAll,7), ma25 = computeSMA(closesAll,25), ma99 = computeSMA(closesAll,99);
+  let minP=Infinity, maxP=-Infinity;
+  candles.forEach(c=>{ if(c.high>maxP)maxP=c.high; if(c.low<minP)minP=c.low; });
+  for(let idx=startIdxInt; idx<endIdxInt; idx++){
+    [ma7[idx],ma25[idx],ma99[idx]].forEach(v=>{ if(v!==null){ if(v>maxP)maxP=v; if(v<minP)minP=v; } });
+  }
+  const proj = computeProjection(all);
+  if(proj){
+    proj.path.forEach(p=>{ if(p.upper>maxP)maxP=p.upper; if(p.lower<minP)minP=p.lower; });
+  }
+  if(!isFinite(minP) || !isFinite(maxP) || minP===maxP){ minP=(minP||0)-1; maxP=(maxP||1)+1; }
+  return {minP, maxP};
+}
+
+function computeSharedRange(all){
+  const {minP:rawMin, maxP:rawMax} = computeRawPriceRange(all);
+  // manual vertical zoom + pan
+  const center = (rawMin+rawMax)/2 + priceCenterOffset;
+  const half = (rawMax-rawMin)/2 * priceScaleFactor;
+  return {minP: center-half, maxP: center+half};
+}
+
+function draw(){
+  const all = buildCandles(currentSec);
+  const w = chartCanvas.width/(window.devicePixelRatio||1);
+  const h = chartCanvas.height/(window.devicePixelRatio||1);
+  ctx.clearRect(0,0,w,h);
+
+  const tw = timeCanvas.width/(window.devicePixelRatio||1);
+  const th = timeCanvas.height/(window.devicePixelRatio||1);
+  tctx.clearRect(0,0,tw,th);
+
+  const o = document.getElementById('ohlc');
+  if(all.length===0){
+    o.innerHTML = '<span>En attente des premières données…</span>';
+    return;
+  }
+
+  const padLeft=8, padRight=64, padTop=10, padBottom=6;
+  const plotW=w-padLeft-padRight, plotH=h-padTop-padBottom;
+  const candleW = plotW/visibleCount;
+
+  const maxOffset = Math.max(0, all.length-visibleCount);
+  panOffset = Math.min(panOffset, maxOffset);
+
+  const endIdxFloat = all.length - panOffset;
+  const startIdxFloat = endIdxFloat - visibleCount;
+  const startIdxInt = Math.max(0, Math.floor(startIdxFloat));
+  const endIdxInt = Math.min(all.length, Math.ceil(endIdxFloat));
+  const candles = all.slice(startIdxInt, endIdxInt);
+  if(candles.length===0) return;
+  const offsetPx = (startIdxFloat - startIdxInt) * candleW; // fractional pixel shift for smoothness
+
+  function xForIdx(j){ return padLeft + j*candleW - offsetPx + candleW/2; }
+
+  // hovered candle (by x position, accounting for fractional scroll)
+  let hoverJ = null;
+  if(hoverPx){
+    const raw = (hoverPx.x - padLeft + offsetPx)/candleW;
+    const j = Math.round(raw - 0.5);
+    if(j>=0 && j<candles.length) hoverJ = j;
+  }
+
+  const displayCandle = hoverJ!==null ? candles[hoverJ] : candles[candles.length-1];
+  const upLast = displayCandle.close >= displayCandle.open;
+  o.innerHTML = `
+    <span>${hoverJ!==null?fmtTahiti(displayCandle.time,true,currentSec<60):'Dernière'}</span>
+    <span>O: <b>${displayCandle.open.toFixed(2)}</b></span>
+    <span>H: <b>${displayCandle.high.toFixed(2)}</b></span>
+    <span>L: <b>${displayCandle.low.toFixed(2)}</b></span>
+    <span>C: <b class="${upLast?'up':'down'}">${displayCandle.close.toFixed(2)}</b></span>
+    <span class="ma-tag" style="color:var(--ma7)">MA7</span>
+    <span class="ma-tag" style="color:var(--ma25)">MA25</span>
+    <span class="ma-tag" style="color:var(--ma99)">MA99</span>
+    <span>Bougies: <b>${candles.length} (${all.length} dispo)</b></span>
+  `;
+
+  // price range from visible candles + MAs later (compute after MA arrays)
+  const closesAll = all.map(c=>c.close);
+  const ma7 = computeSMA(closesAll,7);
+  const ma25 = computeSMA(closesAll,25);
+  const ma99 = computeSMA(closesAll,99);
+
+  const shared = computeSharedRange(all);
+  let minP = shared.minP, maxP = shared.maxP;
+  const range=(maxP-minP)||1;
+  function yFor(p){ return padTop+plotH-((p-minP)/range)*plotH; }
+
+  // grid
+  ctx.strokeStyle='#1e2329'; ctx.lineWidth=1;
+  ctx.font='11px -apple-system,sans-serif'; ctx.fillStyle='#848e9c'; ctx.textAlign='left';
+  for(let i=0;i<=4;i++){
+    const p=minP+(range*i/4), y=yFor(p);
+    ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
+    ctx.fillText(p.toFixed(1), w-padRight+6, y+4);
+  }
+
+  // support/resistance
+  const {support, resist} = computeSR(all, Math.min(150, all.length));
+  if(support!==null){
+    const y = yFor(support);
+    ctx.strokeStyle='rgba(14,203,129,.7)'; ctx.setLineDash([6,4]); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#0ecb81'; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='left';
+    ctx.fillText('Support '+support.toFixed(1), padLeft+4, y-4);
+  }
+  if(resist!==null){
+    const y = yFor(resist);
+    ctx.strokeStyle='rgba(246,70,93,.7)'; ctx.setLineDash([6,4]); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#f6465d'; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='left';
+    ctx.fillText('Résistance '+resist.toFixed(1), padLeft+4, y+12);
+  }
+
+  // candles
+  candles.forEach((c,j)=>{
+    const x = xForIdx(j);
+    const up=c.close>=c.open;
+    const baseColor = up?'14,203,129':'246,70,93';
+    const alpha = c.isHistory ? 0.4 : 1;
+    ctx.strokeStyle=ctx.fillStyle=`rgba(${baseColor},${alpha})`;
+    ctx.beginPath(); ctx.moveTo(x,yFor(c.high)); ctx.lineTo(x,yFor(c.low)); ctx.stroke();
+    const yO=yFor(c.open), yC=yFor(c.close);
+    const top=Math.min(yO,yC), hgt=Math.max(Math.abs(yO-yC),1);
+    const bodyW = Math.max(candleW*0.6,1);
+    ctx.fillRect(x-bodyW/2, top, bodyW, hgt);
+  });
+
+  // MA lines
+  function drawMA(arr, color){
+    ctx.beginPath();
+    let started=false;
+    for(let idx=startIdxInt; idx<endIdxInt; idx++){
+      const v = arr[idx];
+      if(v===null){ started=false; continue; }
+      const j = idx-startIdxInt;
+      const x = xForIdx(j);
+      const y = yFor(v);
+      if(!started){ ctx.moveTo(x,y); started=true; } else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.stroke();
+  }
+  if(showMA){
+    drawMA(ma7, getComputedStyle(document.documentElement).getPropertyValue('--ma7').trim());
+    drawMA(ma25, getComputedStyle(document.documentElement).getPropertyValue('--ma25').trim());
+    drawMA(ma99, getComputedStyle(document.documentElement).getPropertyValue('--ma99').trim());
+  }
+
+  drawTarget(ctx, targetPrice, minP, maxP, padLeft, padRight, padTop, plotH, w);
+
+  // time axis labels
+  tctx.font='10px -apple-system,sans-serif';
+  tctx.fillStyle='#848e9c';
+  tctx.textAlign='center';
+  const labelCount = Math.min(6, candles.length);
+  for(let i=0;i<labelCount;i++){
+    const j = Math.round(i*(candles.length-1)/(Math.max(labelCount-1,1)));
+    const c = candles[j];
+    const x = xForIdx(j);
+    tctx.fillText(fmtTahiti(c.time, true, currentSec<60), x, 12);
+  }
+
+  lastGeom = {candles, padLeft, padRight, padTop, plotW, plotH, candleW, minP, range, w, h, offsetPx, startIdxInt};
+
+  // crosshair overlay
+  if(hoverPx && hoverJ!==null){
+    const x = xForIdx(hoverJ);
+    ctx.save();
+    ctx.strokeStyle='rgba(255,255,255,.4)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(x,padTop); ctx.lineTo(x,padTop+plotH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padLeft,hoverPx.y); ctx.lineTo(w-padRight,hoverPx.y); ctx.stroke();
+    ctx.restore();
+
+    // price tag on right axis at cursor Y (Binance-style)
+    const priceAtCursor = minP + ((padTop+plotH-hoverPx.y)/plotH)*range;
+    ctx.fillStyle='#375bd2';
+    ctx.fillRect(w-padRight, hoverPx.y-9, padRight, 18);
+    ctx.fillStyle='#fff'; ctx.font='11px -apple-system,sans-serif'; ctx.textAlign='left';
+    ctx.fillText(priceAtCursor.toFixed(2), w-padRight+4, hoverPx.y+4);
+
+    // time tag on bottom axis at cursor X
+    const c = candles[hoverJ];
+    tctx.fillStyle='#375bd2';
+    const label = fmtTahiti(c.time, true, currentSec<60);
+    tctx.font='10px -apple-system,sans-serif';
+    const tw2 = tctx.measureText(label).width+12;
+    tctx.fillRect(Math.max(0,x-tw2/2), 0, tw2, 20);
+    tctx.fillStyle='#fff'; tctx.textAlign='center';
+    tctx.fillText(label, x, 13);
+  }
+
+  drawVolume();
+}
+
+function drawVolume(){
+  const all = buildCandles(currentSec);
+  const w = volCanvas.width/(window.devicePixelRatio||1);
+  const h = volCanvas.height/(window.devicePixelRatio||1);
+  vctx.clearRect(0,0,w,h);
+  if(all.length===0) return;
+
+  const {candles, padLeft, padRight, candleW, offsetPx} = computeVisibleWindow(all);
+  if(candles.length===0) return;
+  function xForIdx(j){ return padLeft + j*candleW - offsetPx + candleW/2; }
+
+  const volMap = new Map(currentVolumes.map(v=>[v.time, v.vol]));
+  const vols = candles.map(c=>volMap.get(c.time)||0);
+  const maxVol = Math.max(1, ...vols);
+  const padTop=12, padBottom=4;
+  const plotH = h-padTop-padBottom;
+
+  candles.forEach((c,j)=>{
+    const x = xForIdx(j);
+    const up = c.close>=c.open;
+    vctx.fillStyle = up ? 'rgba(14,203,129,.55)' : 'rgba(246,70,93,.55)';
+    const barH = Math.max(1, (vols[j]/maxVol)*plotH);
+    const bodyW = Math.max(candleW*0.6,1);
+    vctx.fillRect(x-bodyW/2, padTop+plotH-barH, bodyW, barH);
+  });
+
+  vctx.fillStyle='#848e9c'; vctx.font='9px -apple-system,sans-serif'; vctx.textAlign='left';
+  vctx.fillText('VOL BTC (approx. Binance)', padLeft, 9);
+}
+
+function drawProjection(){
+  const all = buildCandles(currentSec);
+  const w = projCanvas.width/(window.devicePixelRatio||1);
+  const h = projCanvas.height/(window.devicePixelRatio||1);
+  pctx.clearRect(0,0,w,h);
+  const projValEl = document.getElementById('projVal');
+
+  const proj = computeProjection(all);
+  if(!proj){
+    projValEl.textContent = '--';
+    return;
+  }
+  const {N, HORIZON, closes, path, projClose, projPct} = proj;
+  projValEl.textContent = projClose.toFixed(2)+' ('+(projPct>=0?'+':'')+projPct.toFixed(3)+'%)';
+  projValEl.style.color = projPct>=0 ? 'var(--up)' : 'var(--down)';
+
+  const {minP, maxP} = computeSharedRange(all); // same vertical scale as the main chart
+  const range = (maxP-minP)||1;
+  const padLeft=8, padRight=70, padTop=14, padBottom=20;
+  const plotW=w-padLeft-padRight, plotH=h-padTop-padBottom;
+  function yFor(p){ return padTop+plotH-((p-minP)/range)*plotH; }
+  function xFor(i){ return padLeft + (i/HORIZON)*plotW; }
+
+  pctx.strokeStyle='#1e2329'; pctx.lineWidth=1;
+  pctx.font='11px -apple-system,sans-serif'; pctx.fillStyle='#848e9c';
+  for(let i=0;i<=4;i++){
+    const p=minP+(range*i/4), y=yFor(p);
+    pctx.beginPath(); pctx.moveTo(padLeft,y); pctx.lineTo(w-padRight,y); pctx.stroke();
+    pctx.fillText(p.toFixed(1), w-padRight+6, y+4);
+  }
+
+  pctx.beginPath();
+  path.forEach((p,i)=>{ const x=xFor(i), y=yFor(p.upper); if(i===0) pctx.moveTo(x,y); else pctx.lineTo(x,y); });
+  for(let i=path.length-1;i>=0;i--){ const x=xFor(i), y=yFor(path[i].lower); pctx.lineTo(x,y); }
+  pctx.closePath();
+  pctx.fillStyle='rgba(127,149,255,.18)';
+  pctx.fill();
+
+  pctx.beginPath();
+  path.forEach((p,i)=>{ const x=xFor(i), y=yFor(p.mid); if(i===0) pctx.moveTo(x,y); else pctx.lineTo(x,y); });
+  pctx.strokeStyle='#7f95ff'; pctx.lineWidth=2; pctx.stroke();
+
+  const y0 = yFor(closes[closes.length-1]);
+  pctx.fillStyle='#fff';
+  pctx.beginPath(); pctx.arc(padLeft, y0, 3, 0, Math.PI*2); pctx.fill();
+
+  drawTarget(pctx, targetPrice, minP, maxP, padLeft, padRight, padTop, plotH, w);
+}
+
+resizeCanvases();
+connect();
+errEl.textContent = 'Chargement de l\'historique Chainlink on-chain…';
+Promise.all([loadHistory(currentSec), refreshVolumes(currentSec)]).then(()=>{
+  if(errEl.textContent.startsWith('Chargement')) errEl.textContent='';
+  tryAutoFillPriceToBeat();
+  draw();
+  drawProjection();
+}).catch(e=>{
+  errEl.textContent = 'Erreur de chargement initial: '+e.message;
+  console.error(e);
+});
+</script>
+</body>
+</html>
