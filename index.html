@@ -140,6 +140,7 @@
       <span>Masquer support/résistance</span>
     </label>
     <button class="tf-btn on" id="toggleAlerts" title="Afficher ou masquer les alertes et messages d'analyse algorithmique">Alertes: activées</button>
+    <button class="tf-btn on" id="toggleSessions" title="Afficher/masquer les traits verticaux de sessions (5 min)">Sessions: affichées</button>
 
   </div>
 
@@ -208,6 +209,8 @@ const TFS = [
   {label:'1J', seconds:86400},
 ];
 let currentSec = 2;
+let alertsEnabled = true; // doit être défini tôt : utilisé dès le premier tickCountdown() au chargement
+let lateSignalFlags = {}; // windowStart -> {momentum, secondsLeft} ; doit aussi être défini tôt (utilisé dans finalizeWindowTrack)
 let ticks = [];
 let binanceTicks = []; // flux live Binance (affichage), en parallèle de ticks (Chainlink, résolution)
 let binanceWs = null;
@@ -220,7 +223,8 @@ let vol1sCache = null;
 let volumeCache = {};
 let currentVolumes = [];
 let sourceMode = 'chainlink'; // 'chainlink' | 'binance' -- Chainlink par défaut; bascule auto sur Binance si injoignable (voir loadHistory)
-let chainlinkRawHistory = null; // raw {time,v} points fetched on-chain, independent of timeframe
+let chainlinkRawHistory = null; // raw {time,v,roundId} points fetched on-chain, independent of timeframe
+let chainlinkEarliestRoundId = null; // round id le plus ancien déjà chargé (pour paginer vers le passé)
 
 const POLYGON_RPCS = [
   'https://polygon-rpc.com',
@@ -326,34 +330,42 @@ async function findWorkingRpc(){
   throw new Error('aucun RPC Polygon accessible (timeout ou CORS)');
 }
 
-async function fetchChainlinkOnchainHistory(count){
+async function fetchChainlinkOnchainHistory(count, beforeRoundId){
   count = count || 150;
   const rpcUrl = await findWorkingRpc();
 
-  const [latestResult] = await rpcBatch([{id:0, to:BTC_USD_FEED, data:'0xfeaf968c'}], rpcUrl);
-  if(!latestResult || latestResult==='0x') throw new Error('latestRoundData vide');
-  const [roundId, answer, , updatedAt] = decodeWords(latestResult);
+  let startRoundId, points;
+  if(beforeRoundId !== undefined && beforeRoundId !== null){
+    // pagination : on repart d'un round déjà connu (le plus ancien chargé) et on continue en arrière
+    startRoundId = beforeRoundId;
+    points = [];
+  } else {
+    const [latestResult] = await rpcBatch([{id:0, to:BTC_USD_FEED, data:'0xfeaf968c'}], rpcUrl);
+    if(!latestResult || latestResult==='0x') throw new Error('latestRoundData vide');
+    const [roundId, answer, , updatedAt] = decodeWords(latestResult);
+    startRoundId = roundId;
+    points = [{time:Number(updatedAt)*1000, v:Number(answer)/(10**FEED_DECIMALS), roundId}];
+  }
 
   const calls = [];
   for(let i=1;i<count;i++){
-    const rid = roundId - BigInt(i);
+    const rid = startRoundId - BigInt(i);
     if(rid < 0n) break;
-    calls.push({id:i, to:BTC_USD_FEED, data:'0x9a6fc8f5'+encodeUint(rid)});
+    calls.push({id:i, to:BTC_USD_FEED, data:'0x9a6fc8f5'+encodeUint(rid), rid});
   }
 
-  const points = [{time:Number(updatedAt)*1000, v:Number(answer)/(10**FEED_DECIMALS)}];
   for(let i=0;i<calls.length;i+=20){
     const chunk = calls.slice(i,i+20);
     let results;
     try{ results = await rpcBatch(chunk, rpcUrl); }
     catch(e){ continue; }
-    for(const r of results){
-      if(!r || r==='0x') continue;
+    results.forEach((r,idx)=>{
+      if(!r || r==='0x') return;
       const w = decodeWords(r);
       const ans = w[1], up = w[3];
-      if(up===0n) continue;
-      points.push({time:Number(up)*1000, v:Number(ans)/(10**FEED_DECIMALS)});
-    }
+      if(up===0n) return;
+      points.push({time:Number(up)*1000, v:Number(ans)/(10**FEED_DECIMALS), roundId: chunk[idx].rid});
+    });
   }
   if(points.length < 3) throw new Error('trop peu de rounds récupérés ('+points.length+')');
   const uniq = Array.from(new Map(points.map(p=>[p.time,p])).values()).sort((a,b)=>a.time-b.time);
@@ -970,7 +982,13 @@ document.getElementById('hideSR').addEventListener('change', (e)=>{
   draw();
 });
 
-let alertsEnabled = true;
+let showSessions = true;
+document.getElementById('toggleSessions').onclick = ()=>{
+  showSessions = !showSessions;
+  setToggleBtn('toggleSessions', showSessions, 'Sessions: affichées', 'Sessions: masquées');
+  draw();
+};
+
 document.getElementById('toggleAlerts').onclick = ()=>{
   alertsEnabled = !alertsEnabled;
   setToggleBtn('toggleAlerts', alertsEnabled, 'Alertes: activées', 'Alertes: désactivées');
@@ -1125,6 +1143,7 @@ async function loadHistory(seconds){
     try{
       if(!chainlinkRawHistory){
         chainlinkRawHistory = await fetchChainlinkOnchainHistory(100);
+        chainlinkEarliestRoundId = chainlinkRawHistory.reduce((min,p)=> (min===null || p.roundId<min) ? p.roundId : min, null);
       }
       const candles = bucketPoints(chainlinkRawHistory, seconds);
       if(candles.length < 3) throw new Error('historique trop clairsemé');
@@ -1164,6 +1183,82 @@ async function loadHistory(seconds){
     errEl.textContent = 'Historique indisponible ('+e.message+') — affichage en direct uniquement.';
     return [];
   }
+}
+
+// ---- Chargement de bougies plus anciennes, à la demande (pas "infini", mais fiable) ----
+// Déclenché quand on s'approche du bord gauche des données déjà chargées. Chaque source a sa
+// propre limite naturelle (origine du feed Chainlink, historique disponible chez Binance) ;
+// une fois qu'une requête ne renvoie plus rien de nouveau, on arrête d'essayer pour ce couple
+// source/résolution (évite de spammer des requêtes inutiles).
+let loadingOlderHistory = false;
+let lastOlderLoadAttempt = 0;
+let noMoreOlderData = {};
+
+async function loadOlderChainlinkHistory(count){
+  if(chainlinkEarliestRoundId === null) return false;
+  const older = await fetchChainlinkOnchainHistory(count, chainlinkEarliestRoundId);
+  const newPoints = older.filter(p => p.roundId < chainlinkEarliestRoundId);
+  if(newPoints.length === 0) return false;
+  const merged = [...newPoints, ...chainlinkRawHistory];
+  chainlinkRawHistory = Array.from(new Map(merged.map(p=>[p.time,p])).values()).sort((a,b)=>a.time-b.time);
+  chainlinkEarliestRoundId = newPoints.reduce((min,p)=> p.roundId<min ? p.roundId : min, chainlinkEarliestRoundId);
+  historyCache = {}; // toutes les résolutions dérivées doivent être recalculées depuis les nouvelles données
+  return true;
+}
+
+async function loadOlderBinanceHistory(){
+  const cacheKey = sourceMode+':'+currentSec;
+  const cached = historyCache[cacheKey];
+  if(!cached || cached.length===0) return false;
+  const earliest = cached[0].time;
+  if(currentSec < 60){
+    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1s&limit=1000&endTime=${earliest-1}`);
+    if(!res.ok) return false;
+    const data = await res.json();
+    if(!data.length) return false;
+    const older = data.map(d=>({time:d[0],open:parseFloat(d[1]),high:parseFloat(d[2]),low:parseFloat(d[3]),close:parseFloat(d[4])}));
+    base1sCache = [...older, ...(base1sCache||[])];
+    historyCache = {};
+    return true;
+  } else {
+    const interval = BINANCE_INTERVAL[currentSec];
+    if(!interval) return false;
+    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=500&endTime=${earliest-1}`);
+    if(!res.ok) return false;
+    const data = await res.json();
+    if(!data.length) return false;
+    const older = data.map(d=>({time:d[0],open:parseFloat(d[1]),high:parseFloat(d[2]),low:parseFloat(d[3]),close:parseFloat(d[4]),isHistory:true}));
+    historyCache[cacheKey] = [...older, ...cached];
+    return true;
+  }
+}
+
+async function loadOlderHistory(){
+  if(loadingOlderHistory) return false;
+  loadingOlderHistory = true;
+  try{
+    const ok = sourceMode==='chainlink' ? await loadOlderChainlinkHistory(100) : await loadOlderBinanceHistory();
+    if(ok) await loadHistory(currentSec);
+    return ok;
+  }catch(e){
+    console.error('chargement historique plus ancien', e);
+    return false;
+  }finally{
+    loadingOlderHistory = false;
+  }
+}
+
+function maybeLoadOlderHistory(startIdxInt){
+  if(startIdxInt > 20) return; // pas assez proche du bord gauche chargé
+  const key = sourceMode+':'+currentSec;
+  if(noMoreOlderData[key]) return;
+  const nowMs = Date.now();
+  if(loadingOlderHistory || (nowMs - lastOlderLoadAttempt) < 3000) return;
+  lastOlderLoadAttempt = nowMs;
+  loadOlderHistory().then(ok=>{
+    if(ok){ draw(); drawProjection(); }
+    else { noMoreOlderData[key] = true; }
+  });
 }
 
 async function fetchVolumeHistory(seconds){
@@ -1579,7 +1674,6 @@ function updateGapDisplay(){
 // Repère un signe avant-coureur (Binance réagit plus vite que Chainlink) : mouvement rapide + volume
 // anormal sur les 5 dernières secondes de trades, uniquement quand il reste ≤15s dans la fenêtre 5min.
 let lastBinanceLateAlertWindow = null;
-let lateSignalFlags = {}; // windowStart -> {momentum, secondsLeft} si un signal tardif a été détecté
 const BINANCE_LATE_MOVE_THRESHOLD = 0.0008; // ~0.08% en 5s = mouvement rapide
 function detectBinanceLateMove(){
   const info = getWindowInfo(WINDOW_SECONDS);
@@ -1849,6 +1943,7 @@ function draw(){
   const candles = all.slice(startIdxInt, endIdxInt);
   if(candles.length===0) return;
   const offsetPx = (startIdxFloat - startIdxInt) * candleW; // fractional pixel shift for smoothness
+  maybeLoadOlderHistory(startIdxInt);
 
   function xForIdx(j){ return padLeft + j*candleW - offsetPx + candleW/2; }
 
@@ -1892,6 +1987,30 @@ function draw(){
     const p=minP+(range*i/4), y=yFor(p);
     ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
     ctx.fillText(p.toFixed(1), w-padRight+6, y+4);
+  }
+
+  // traits verticaux de sessions (tranches de 5 min, mêmes limites que les fenêtres Polymarket)
+  if(showSessions && candles.length>0){
+    const candleMs = currentSec*1000;
+    const bucketMs = WINDOW_SECONDS*1000;
+    const startTime = candles[0].time;
+    const lastCandleTime = candles[candles.length-1].time + candleMs;
+    const firstBoundary = Math.ceil(startTime/bucketMs)*bucketMs;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,.14)';
+    ctx.setLineDash([2,4]);
+    ctx.lineWidth = 1;
+    for(let t=firstBoundary; t<lastCandleTime; t+=bucketMs){
+      const j = (t-startTime)/candleMs;
+      const x = padLeft + j*candleW - offsetPx;
+      if(x < padLeft-4 || x > w-padRight+4) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, padTop);
+      ctx.lineTo(x, padTop+plotH);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
   }
 
   // support/resistance
