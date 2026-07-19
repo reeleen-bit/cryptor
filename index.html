@@ -560,6 +560,28 @@ function computePriceToBeat(windowSeconds){
   return null;
 }
 
+// Recherche du tout premier tick RÉEL (pas une bougie agrégée) à/après un instant donné — même principe
+// que computePriceToBeat, mais pour une limite de fenêtre arbitraire (pas forcément la fenêtre en cours).
+// Utilisé pour que le "Price to Beat" affiché sur chaque ligne de session soit exactement identique à
+// ce que Polymarket affiche, quelle que soit la résolution d'affichage choisie.
+function findFirstAtOrAfter(sortedArr, t, getTime){
+  let lo=0, hi=sortedArr.length;
+  while(lo<hi){
+    const mid=(lo+hi)>>1;
+    if(getTime(sortedArr[mid])>=t) hi=mid; else lo=mid+1;
+  }
+  return lo<sortedArr.length ? lo : -1;
+}
+function getFirstRawTickAtOrAfter(t){
+  const i1 = findFirstAtOrAfter(ticks, t, x=>x.t);
+  if(i1!==-1) return ticks[i1].v;
+  if(chainlinkRawHistory && chainlinkRawHistory.length){
+    const i2 = findFirstAtOrAfter(chainlinkRawHistory, t, x=>x.time);
+    if(i2!==-1) return chainlinkRawHistory[i2].v;
+  }
+  return null;
+}
+
 // Repli quand on ouvre en plein milieu d'une fenêtre (aucun tick live assez tôt) : on interroge
 // directement la source Chainlink on-chain (jamais Binance, ce n'est pas la même source que Polymarket
 // utilise pour résoudre le marché). On répète la vérification 3 fois à quelques secondes d'intervalle
@@ -2034,8 +2056,8 @@ function draw(){
       // Price to Beat de la session suivante, à DROITE de la ligne (orange) — c'est exactement le
       // premier tick réel après la limite, donc identique au Price to Beat que Polymarket affichera
       // pour la nouvelle fenêtre. Zoome et passe à l'horizontale quand le curseur s'en approche.
-      if(k+1 < candles.length){
-        const ptbPrice = candles[k+1].close;
+      const ptbPrice = getFirstRawTickAtOrAfter(t);
+      if(ptbPrice !== null){
         const ptbLabel = 'Price to Beat '+ptbPrice.toFixed(2);
         const hovered = !!(hoverPx && Math.abs(hoverPx.x - (x+13)) < 18 && hoverPx.y >= padTop && hoverPx.y <= padTop+plotH);
         if(hovered){
