@@ -139,13 +139,14 @@
       <input type="checkbox" id="hideSR" style="width:15px;height:15px;">
       <span>Masquer support/résistance</span>
     </label>
-    <button class="tf-btn" id="showSummary" title="Analyse en langage simple des observations de cette session">📋 Résumé</button>
+    <button class="tf-btn on" id="toggleAlerts" title="Afficher ou masquer les alertes et messages d'analyse algorithmique">Alertes: activées</button>
+
   </div>
 
   <div class="charts">
     <div class="panel">
       <div class="ohlc" id="ohlc"></div>
-      <div class="note" id="olderTargetsPanel" style="display:none;"></div>
+      <div class="note" id="targetChecklist" style="display:none;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px;"></div>
       <div class="chart-wrap">
         <canvas id="chart" height="460"></canvas>
       </div>
@@ -180,8 +181,9 @@
         Régression linéaire sur les dernières clôtures de la période sélectionnée, cône d'incertitude basé sur l'ATR.
         Recalculée à chaque changement de période. Pas une garantie de prix futur.
       </div>
+      <div class="note" id="lastMinutesAdvicePanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.3);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
       <div class="note" id="insightsPanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
-      <div class="note" id="summaryPanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.25);border-radius:6px;padding:10px 12px;font-size:12.5px;line-height:1.7;"></div>
+      <div class="note" id="reversalWarningPanel" style="display:none;margin-top:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
     </div>
   </div>
 
@@ -210,7 +212,6 @@ let ticks = [];
 let binanceTicks = []; // flux live Binance (affichage), en parallèle de ticks (Chainlink, résolution)
 let binanceWs = null;
 let lastGapAlertAt = 0; // debounce pour ne pas spammer l'alerte d'écart
-let gapLog = []; // journal des fenêtres 5 min : écart Binance/Chainlink aux checkpoints + résultat final
 let ws = null;
 let pingTimer = null;
 let historyCache = {};   // seconds -> aggregated history candles
@@ -446,12 +447,71 @@ function pushTargetHistory(price){
   if(targetHistory.length>10) targetHistory.length = 10;
   renderOlderTargetsPanel();
 }
+let targetChecked = {}; // index (0 = plus récent) -> bool, contrôle l'affichage de la ligne sur le graphique
 function renderOlderTargetsPanel(){
-  const panel = document.getElementById('olderTargetsPanel');
-  const older = targetHistory.slice(5,10);
-  if(older.length===0){ panel.style.display='none'; return; }
-  panel.style.display='block';
-  panel.innerHTML = '<b style="color:var(--muted);">Autres targets (6-10) :</b> ' + older.map(v=>v.toFixed(2)).join(' · ');
+  const panel = document.getElementById('targetChecklist');
+  if(targetHistory.length===0){ panel.style.display='none'; return; }
+  panel.style.display='flex';
+  const allChecked = targetHistory.every((_,i)=>targetChecked[i]);
+  const selectAllHtml = `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text);cursor:pointer;font-weight:600;">
+    <input type="checkbox" id="targetCheckAll" ${allChecked?'checked':''} style="width:13px;height:13px;">
+    Afficher tous / masquer tous
+  </label><span class="sep"></span>`;
+  const itemsHtml = targetHistory.map((price,i)=>{
+    const checked = targetChecked[i] ? 'checked' : '';
+    const color = targetHistoryColor(i, targetHistory.length);
+    return `<label style="display:flex;align-items:center;gap:5px;font-size:11.5px;color:${color};cursor:pointer;">
+      <input type="checkbox" data-idx="${i}" class="target-cb" ${checked} style="width:13px;height:13px;">
+      Target ${i+1}
+    </label>`;
+  }).join('');
+  panel.innerHTML = selectAllHtml + itemsHtml;
+  document.getElementById('targetCheckAll').addEventListener('change', e=>{
+    const val = e.target.checked;
+    targetHistory.forEach((_,i)=>{ targetChecked[i] = val; });
+    renderOlderTargetsPanel();
+    draw();
+  });
+  panel.querySelectorAll('.target-cb').forEach(cb=>{
+    cb.addEventListener('change', e=>{
+      const idx = parseInt(e.target.dataset.idx,10);
+      targetChecked[idx] = e.target.checked;
+      renderOlderTargetsPanel();
+      draw();
+    });
+  });
+}
+
+// Rétro-remplissage des Target 1-5 (et 6-10) à l'ouverture de la page, à partir de l'historique déjà
+// chargé, pour ne pas avoir à attendre la clôture live de plusieurs fenêtres de 5 min.
+// On vise le Final Price (clôture) de chaque fenêtre passée — qui est le même tick Chainlink que le
+// Price to Beat (ouverture) de la fenêtre suivante, d'où le décalage de (i-1) au lieu de i.
+function backfillTargetHistory(){
+  if(targetHistory.length>0) return; // déjà alimenté (ex: rechargement rapide), ne pas écraser
+  let points = null;
+  if(chainlinkRawHistory && chainlinkRawHistory.length){
+    points = chainlinkRawHistory;
+  } else if(base1sCache && base1sCache.length){
+    points = base1sCache.map(c=>({time:c.time, v:c.close}));
+  }
+  if(!points || points.length===0) return;
+  const sorted = [...points].sort((a,b)=>a.time-b.time);
+  const info = getWindowInfo(WINDOW_SECONDS);
+  const bucketMs = WINDOW_SECONDS*1000;
+  const results = [];
+  for(let i=1;i<=10;i++){
+    const windowEnd = info.start - (i-1)*bucketMs; // clôture de la i-ème fenêtre passée
+    let best = null;
+    for(const p of sorted){
+      if(p.time >= windowEnd){ best = p; break; }
+    }
+    if(best) results.push(best.v);
+  }
+  if(results.length){
+    targetHistory = results;
+    renderOlderTargetsPanel();
+    draw();
+  }
 }
 
 let autoFillState = { windowStart: null, filled: false, onchainCheckStarted: false };
@@ -576,7 +636,11 @@ let sessionWindows = [];
 
 function finalizeWindowTrack(wt){
   delete lateSignalFlags[wt.windowStart];
-  if(wt.ptb !== null) pushTargetHistory(wt.ptb);
+  // Final Price de la fenêtre qui vient de se clôturer = le tick Chainlink pile à la limite de fenêtre
+  // (le même tick qui sert aussi de Price to Beat pour la fenêtre suivante — flux continu). C'est
+  // exactement la valeur que Polymarket utilise pour résoudre le marché, pas une approximation.
+  const finalPrice = computePriceToBeat(WINDOW_SECONDS);
+  if(finalPrice !== null) pushTargetHistory(finalPrice);
 
   if(wt.ptb === null || !wt.lastRel) return; // pas assez de données pour compter cette fenêtre (analyse retournement)
   const record = {
@@ -593,28 +657,23 @@ function finalizeWindowTrack(wt){
   sessionWindows.push(record);
   if(sessionWindows.length > 200) sessionWindows.shift();
   updateInsightsPanel();
+  recordReversalEvent(record);
+
+  const bucketMs = WINDOW_SECONDS*1000;
+  const windowCandles = buildCandles(currentSec).filter(c=>c.time>=wt.windowStart && c.time<wt.windowStart+bucketMs);
+  updateComboStats(wt, windowCandles);
+  updatePatternWarningPanel();
 }
 
 function updateWindowTracking(){
   const info = getWindowInfo(WINDOW_SECONDS);
   if(!windowTrack || windowTrack.windowStart !== info.start){
     if(windowTrack) finalizeWindowTrack(windowTrack);
-    windowTrack = {windowStart: info.start, ptb: null, checkpoints: {}, marked: new Set(), lastRel: null, prevRel: null, crossings: 0, lastFlipSecondsLeft: null, gapCheckpoints: {}, gapMarked: new Set(), finalGap: null};
+    windowTrack = {windowStart: info.start, ptb: null, checkpoints: {}, marked: new Set(), lastRel: null, prevRel: null, crossings: 0, lastFlipSecondsLeft: null};
   }
   // on ne fixe le PTB de référence que s'il est confirmé (pas une simple estimation "≈")
   if(windowTrack.ptb === null && targetPrice !== null && !estimatedPTB){
     windowTrack.ptb = targetPrice;
-  }
-  // écart Binance/Chainlink : enregistré aux mêmes checkpoints, indépendamment du PTB
-  const gap = currentGapPct();
-  if(gap !== null){
-    windowTrack.finalGap = gap;
-    for(const mark of CHECKPOINT_MARKS){
-      if(info.secondsLeft <= mark && !windowTrack.gapMarked.has(mark)){
-        windowTrack.gapCheckpoints[mark] = gap;
-        windowTrack.gapMarked.add(mark);
-      }
-    }
   }
   if(windowTrack.ptb !== null && ticks.length){
     const lastV = ticks[ticks.length-1].v;
@@ -634,90 +693,182 @@ function updateWindowTracking(){
   }
 }
 
-function computeLateSignalStats(){
-  const withBoth = gapLog.filter(g => g.lateSignal && g.result);
-  if(withBoth.length === 0) return null;
-  const correct = withBoth.filter(g =>
-    (g.lateSignal.momentum > 0 && g.result === 'above') ||
-    (g.lateSignal.momentum < 0 && g.result === 'below')
-  ).length;
-  return {n: withBoth.length, correct, pct: Math.round(correct/withBoth.length*100)};
+// ---- Suivi persistant (localStorage) de plusieurs types d'anomalies/patterns ----
+// Chaque type est enregistré avec date + heure (Tahiti), pour repérer si un comportement donné
+// revient à des tranches horaires similaires, sur plusieurs jours distincts — pas juste au sein
+// d'une seule session. Plusieurs types peuvent être signalés simultanément.
+const PATTERN_STORAGE_KEY = 'cryptor_pattern_events_v2';
+const PATTERN_MIN_DAYS = 3; // nb de jours distincts minimum pour juger la récurrence significative
+const PATTERN_MAX_AGE_MS = 60*24*3600*1000; // on garde 60 jours d'historique local
+const PATTERN_INFO = {
+  late_reversal: {label: "retournements brusques (chute ou hausse subite dans les 10 dernières secondes du cycle)"},
+  v_shape: {label: "mouvements en V (hausse puis chute rapide, ou l'inverse — pouvant évoquer un achat suivi d'une revente rapide)"},
+  abnormal_volume: {label: "pics de volume anormaux sans mouvement de prix notable (possible absorption ou trades appariés)"},
+  chainlink_late_move: {label: "mouvements brusques en toute fin de fenêtre sur le flux Chainlink (source de résolution)"},
+};
+
+function tahitiDateHour(ms){
+  const fmt = new Intl.DateTimeFormat('en-US', {timeZone:'Pacific/Tahiti', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', hourCycle:'h23'});
+  const map = {};
+  fmt.formatToParts(new Date(ms)).forEach(p=>{ map[p.type]=p.value; });
+  return {date: `${map.year}-${map.month}-${map.day}`, hour: parseInt(map.hour,10)};
 }
 
-// Résumé en langage simple, pensé pour être lu sans connaissances techniques : phrases courtes,
-// pas de jargon statistique, délai (secondes avant clôture) explicité à chaque fois que c'est pertinent.
-function generateHumanSummary(){
-  const lines = [];
-  lines.push(`Sur ${gapLog.length} fenêtre(s) de 5 minutes observée(s) depuis l'ouverture de Cryptor :`);
-
-  const withSignal = gapLog.filter(g => g.lateSignal && g.result);
-  const stats = computeLateSignalStats();
-
-  if(!stats){
-    lines.push("Pas encore assez de signaux tardifs Binance détectés avec un résultat confirmé pour en tirer une conclusion.");
-  } else {
-    lines.push(`Le signal tardif Binance a annoncé le bon sens ${stats.correct} fois sur ${stats.n} (soit ${stats.pct}%).`);
-
-    const correctDelays = withSignal.filter(g =>
-      (g.lateSignal.momentum>0 && g.result==='above') || (g.lateSignal.momentum<0 && g.result==='below')
-    ).map(g=>g.lateSignal.secondsLeft);
-    const wrongDelays = withSignal.filter(g =>
-      !((g.lateSignal.momentum>0 && g.result==='above') || (g.lateSignal.momentum<0 && g.result==='below'))
-    ).map(g=>g.lateSignal.secondsLeft);
-
-    if(correctDelays.length){
-      const avg = correctDelays.reduce((a,b)=>a+b,0)/correctDelays.length;
-      lines.push(`Quand il avait raison, le signal apparaissait en moyenne ${avg.toFixed(0)} secondes avant la clôture.`);
-    }
-    if(wrongDelays.length){
-      const avg = wrongDelays.reduce((a,b)=>a+b,0)/wrongDelays.length;
-      lines.push(`Quand il s'est trompé, il apparaissait en moyenne ${avg.toFixed(0)} secondes avant la clôture.`);
-    }
-
-    if(stats.pct >= 65){
-      lines.push("→ Ce signal semble utile pour anticiper la clôture — mais à confirmer sur davantage de fenêtres avant d'en faire une règle.");
-    } else if(stats.pct <= 40){
-      lines.push("→ Ce signal s'est trompé plus souvent qu'il n'a eu raison sur cette session — mieux vaut ne pas s'y fier pour l'instant.");
-    } else {
-      lines.push("→ Pour l'instant, ce signal ne fait ni mieux ni pire que le hasard.");
-    }
-  }
-
-  // tendance de l'écart Binance/Chainlink à l'approche de la clôture
-  const first = CHECKPOINT_MARKS.find(m => gapLog.some(g=>g.gapCheckpoints[m]!==undefined));
-  const last = [...CHECKPOINT_MARKS].reverse().find(m => gapLog.some(g=>g.gapCheckpoints[m]!==undefined));
-  if(first && last && first!==last){
-    const avg = (mark)=>{
-      const vals = gapLog.map(g=>g.gapCheckpoints[mark]).filter(v=>v!==undefined).map(Math.abs);
-      return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
-    };
-    const avgFirst = avg(first), avgLast = avg(last);
-    if(avgFirst!==null && avgLast!==null){
-      const growing = avgLast > avgFirst*1.1;
-      const stable = avgLast < avgFirst*1.1 && avgLast > avgFirst*0.9;
-      lines.push(growing
-        ? `L'écart entre Binance et Chainlink a tendance à s'agrandir à l'approche de la clôture (encore ${last}s avant la fin) — reste prudent sur les toutes dernières secondes.`
-        : stable
-          ? "L'écart entre Binance et Chainlink reste globalement stable jusqu'à la clôture."
-          : "L'écart entre Binance et Chainlink a tendance à se resserrer à l'approche de la clôture."
-      );
-    }
-  }
-
-  if(gapLog.length < 10){
-    lines.push("Échantillon encore réduit (moins de 10 fenêtres) — à prendre comme une première tendance, pas comme une certitude.");
-  }
-
-  return lines;
+function loadPatternEvents(){
+  try{
+    const raw = localStorage.getItem(PATTERN_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+function savePatternEvents(events){
+  try{ localStorage.setItem(PATTERN_STORAGE_KEY, JSON.stringify(events)); }catch(e){ /* stockage local indisponible, tant pis */ }
 }
 
-function renderSummaryPanel(){
-  const panel = document.getElementById('summaryPanel');
+function recordPatternEvent(type, ms, extra){
+  const {date, hour} = tahitiDateHour(ms);
+  const events = loadPatternEvents();
+  events.push(Object.assign({type, date, hour, windowStart: ms}, extra||{}));
+  const cutoff = Date.now() - PATTERN_MAX_AGE_MS;
+  const trimmed = events.filter(e=>e.windowStart >= cutoff).slice(-1000);
+  savePatternEvents(trimmed);
+  updatePatternWarningPanel(trimmed);
+}
+
+function recordReversalEvent(record){
+  const lateFlip = record.flips[10]===true || record.flips[5]===true;
+  if(!lateFlip) return;
+  recordPatternEvent('late_reversal', record.windowStart, {secondsLeft: record.lastFlipSecondsLeft, dir: record.finalRel});
+}
+
+function inHourRange(h, start, end){
+  if(start<=end) return h>=start && h<=end;
+  return h>=start || h<=end; // plage à cheval sur minuit
+}
+
+function analyzePatternClusters(events){
+  const byHour = {};
+  events.forEach(e=>{
+    if(!byHour[e.hour]) byHour[e.hour] = new Set();
+    byHour[e.hour].add(e.date);
+  });
+  const hours = Object.keys(byHour).map(Number);
+  let best = null;
+  for(const h of hours){
+    const days = byHour[h].size;
+    if(days >= PATTERN_MIN_DAYS && (!best || days > best.days)) best = {hour: h, days};
+  }
+  if(!best) return null;
+  let startH = best.hour, endH = best.hour, guard = 0;
+  while(guard < 23 && byHour[(startH-1+24)%24] && byHour[(startH-1+24)%24].size >= PATTERN_MIN_DAYS-1){
+    startH = (startH-1+24)%24; guard++;
+  }
+  guard = 0;
+  while(guard < 23 && byHour[(endH+1)%24] && byHour[(endH+1)%24].size >= PATTERN_MIN_DAYS-1){
+    endH = (endH+1)%24; guard++;
+  }
+  const daysSet = new Set(), eventsInRange = [];
+  events.forEach(e=>{ if(inHourRange(e.hour, startH, endH)){ daysSet.add(e.date); eventsInRange.push(e); } });
+  return {startH, endH, days: daysSet.size, count: eventsInRange.length};
+}
+
+// ---- Moteur adaptatif : corrélations par combinaison de caractéristiques ----
+// Pour chaque fenêtre close, on catégorise volume / forme du mouvement / tranche horaire, et on
+// enregistre le résultat (above/below PTB). Si une combinaison ressort avec un échantillon suffisant
+// et un écart net par rapport au hasard, elle est signalée — même si ce n'est pas un pattern prévu
+// à l'avance. C'est la partie "apprentissage" : les conclusions évoluent avec les données accumulées.
+const COMBO_STORAGE_KEY = 'cryptor_combo_stats_v1';
+const COMBO_MIN_SAMPLE = 6;
+const COMBO_NOTABLE_HIGH = 70, COMBO_NOTABLE_LOW = 30;
+
+function loadComboStats(){
+  try{ const raw = localStorage.getItem(COMBO_STORAGE_KEY); return raw ? JSON.parse(raw) : {}; }catch(e){ return {}; }
+}
+function saveComboStats(stats){
+  try{ localStorage.setItem(COMBO_STORAGE_KEY, JSON.stringify(stats)); }catch(e){ /* tant pis */ }
+}
+function categorize(value, thresholds, labels){
+  for(let i=0;i<thresholds.length;i++){ if(value<thresholds[i]) return labels[i]; }
+  return labels[labels.length-1];
+}
+function computeWindowFeatures(wt, windowCandles){
+  const volMap = new Map(currentVolumes.map(v=>[v.time, v.vol]));
+  const vols = windowCandles.map(c=>volMap.get(c.time)||0).filter(v=>v>0);
+  const avgVol = vols.length ? vols.reduce((a,b)=>a+b,0)/vols.length : 0;
+  const allVols = [...volMap.values()].filter(v=>v>0);
+  const baseline = allVols.length ? allVols.reduce((a,b)=>a+b,0)/allVols.length : 1;
+  const volRatio = baseline>0 ? avgVol/baseline : 1;
+  const volCat = categorize(volRatio, [0.7,1.3,2.2], ['bas','normal','élevé','extrême']);
+
+  let shapeCat = 'plat';
+  if(windowCandles.length>=4){
+    const closes = windowCandles.map(c=>c.close);
+    const mid = Math.floor(closes.length/2);
+    const m1 = (closes[mid]-closes[0])/closes[0];
+    const m2 = (closes[closes.length-1]-closes[mid])/closes[mid];
+    const th = 0.0006;
+    if(m1>th && m2<-th) shapeCat = 'v';
+    else if(m1<-th && m2>th) shapeCat = 'v_inv';
+    else if(m1>th && m2>th) shapeCat = 'hausse';
+    else if(m1<-th && m2<-th) shapeCat = 'baisse';
+  }
+  const {hour} = tahitiDateHour(wt.windowStart);
+  const hourBucket = Math.floor(hour/3)*3; // tranche de 3h
+  return {volCat, shapeCat, hourBucket};
+}
+function comboKeyFrom(f){
+  return `volume=${f.volCat}, forme=${f.shapeCat}, tranche=${f.hourBucket}h-${f.hourBucket+3}h`;
+}
+function updateComboStats(wt, windowCandles){
+  if(!wt.lastRel) return;
+  const features = computeWindowFeatures(wt, windowCandles);
+  const key = comboKeyFrom(features);
+  const stats = loadComboStats();
+  if(!stats[key]) stats[key] = {count:0, aboveCount:0};
+  stats[key].count++;
+  if(wt.lastRel==='above') stats[key].aboveCount++;
+  saveComboStats(stats);
+}
+function findNotableCombos(){
+  const stats = loadComboStats();
+  const notable = [];
+  for(const key in stats){
+    const {count, aboveCount} = stats[key];
+    if(count < COMBO_MIN_SAMPLE) continue;
+    const pct = Math.round(aboveCount/count*100);
+    if(pct >= COMBO_NOTABLE_HIGH || pct <= COMBO_NOTABLE_LOW) notable.push({key, count, pct});
+  }
+  notable.sort((a,b)=>Math.abs(b.pct-50)-Math.abs(a.pct-50));
+  return notable.slice(0,3);
+}
+function renderComboInsightsHtml(){
+  const notable = findNotableCombos();
+  if(notable.length===0) return '';
+  return notable.map(n=>{
+    const upLeaning = n.pct>=50;
+    const pctShown = upLeaning ? n.pct : 100-n.pct;
+    const dirWord = upLeaning ? 'au-dessus du Price to Beat ("Up")' : 'en-dessous du Price to Beat ("Down")';
+    return `<div style="margin-top:6px;">🔎 Corrélation détectée : quand ${n.key}, le résultat a été ${dirWord} dans ${pctShown}% des cas (${n.count} occurrence(s) observée(s)).</div>`;
+  }).join('');
+}
+
+function updatePatternWarningPanel(events){
+  const panel = document.getElementById('reversalWarningPanel');
+  if(!alertsEnabled){ panel.style.display='none'; return; }
+  events = events || loadPatternEvents();
+  const pad2 = n=>String(n).padStart(2,'0');
+  let html = '';
+  for(const type in PATTERN_INFO){
+    const typeEvents = events.filter(e=>e.type===type);
+    const cluster = analyzePatternClusters(typeEvents);
+    if(!cluster) continue;
+    const hourLabel = cluster.startH===cluster.endH ? `${pad2(cluster.startH)}h` : `de ${pad2(cluster.startH)}h à ${pad2(cluster.endH)}h`;
+    html += `<div style="margin-top:4px;"><span style="color:#fff;">⚠ Récurrence : ${PATTERN_INFO[type].label} observé(s) ${hourLabel} (heure de Tahiti), sur ${cluster.days} jour(s) distinct(s) (${cluster.count} occurrence(s) au total).</span></div>`;
+  }
+  html += renderComboInsightsHtml();
+  if(!html){ panel.style.display='none'; return; }
   panel.style.display = 'block';
-  const lines = generateHumanSummary();
-  panel.innerHTML = '<b style="color:#0ecb81;">📋 Résumé en langage simple</b><br>' + lines.map(l=>'<div style="margin-top:4px;">'+l+'</div>').join('');
+  panel.innerHTML = `<b style="color:#fff;">Analyse des patterns (historique local, ${events.length} événement(s))</b>` + html;
 }
-document.getElementById('showSummary').onclick = renderSummaryPanel;
 
 // Ne remonte un "conseil" que s'il sort clairement du hasard (un coin-flip donnerait ~50%),
 // avec un échantillon suffisant. Sinon, rien à dire de fiable pour l'instant.
@@ -796,6 +947,7 @@ function tickCountdown(){
   lastWindowStart = info.start;
   tryAutoFillPriceToBeat();
   updateWindowTracking();
+  updateLastMinutesAdvice();
 }
 tickCountdown();
 function scheduleNextTick(){
@@ -817,6 +969,40 @@ document.getElementById('hideSR').addEventListener('change', (e)=>{
   hideSR = e.target.checked;
   draw();
 });
+
+let alertsEnabled = true;
+document.getElementById('toggleAlerts').onclick = ()=>{
+  alertsEnabled = !alertsEnabled;
+  setToggleBtn('toggleAlerts', alertsEnabled, 'Alertes: activées', 'Alertes: désactivées');
+  if(!alertsEnabled){
+    document.getElementById('alertPopup').className = 'alertpop';
+    clearTimeout(alertTimeout);
+  }
+  updatePatternWarningPanel();
+  updateLastMinutesAdvice();
+};
+
+// ---- Conseil dans les 2 dernières minutes de la fenêtre : signale une "opportunité" quand le cours
+// s'écarte nettement du Price to Beat, uniquement dans les 120 dernières secondes (pas avant, pour
+// éviter du bruit alors qu'il reste largement le temps que ça change). Purement informatif.
+const ADVICE_NOTABLE_PCT = 0.04; // écart % jugé notable
+const ADVICE_STRONG_PCT = 0.08;  // écart % jugé net
+function updateLastMinutesAdvice(){
+  const panel = document.getElementById('lastMinutesAdvicePanel');
+  if(!alertsEnabled){ panel.style.display='none'; return; }
+  const info = getWindowInfo(WINDOW_SECONDS);
+  if(info.secondsLeft > 120 || targetPrice===null || !ticks.length){ panel.style.display='none'; return; }
+  const current = ticks[ticks.length-1].v;
+  const pct = (current-targetPrice)/targetPrice*100;
+  const abspct = Math.abs(pct);
+  if(abspct < ADVICE_NOTABLE_PCT){ panel.style.display='none'; return; }
+  const dir = pct>0 ? 'au-dessus' : 'en dessous';
+  const strength = abspct>=ADVICE_STRONG_PCT ? 'nettement' : 'sensiblement';
+  const side = pct>0 ? 'Up' : 'Down';
+  const color = pct>0 ? 'var(--up)' : 'var(--down)';
+  panel.style.display='block';
+  panel.innerHTML = `<span style="color:${color};">💡 Opportunité : le cours est ${strength} ${dir} du Price to Beat (${pct>=0?'+':''}${pct.toFixed(3)}%) à ${info.secondsLeft}s de la clôture — camp "${side}" semble avantagé pour l'instant (pas une garantie, le prix peut encore bouger).</span>`;
+}
 
 function drawTarget(context, target, minP, maxP, padLeft, padRight, padTop, plotH, w){
   if(target===null || target===undefined || isNaN(target)) return;
@@ -871,21 +1057,25 @@ function drawGenericTargetLine(context, target, color, label, minP, maxP, padLef
   context.save();
   context.strokeStyle = color;
   context.fillStyle = color;
-  context.font = '10px -apple-system,sans-serif';
   context.textAlign = 'left';
   if(frac>=0 && frac<=1){
     const y = padTop + plotH - frac*plotH;
-    context.setLineDash([5,4]); context.lineWidth=1;
+    const hovered = !!(hoverPx && Math.abs(hoverPx.y - y) <= 6);
+    context.font = (hovered ? '15px' : '10px') + ' -apple-system,sans-serif';
+    context.lineWidth = hovered ? 2.2 : 1;
+    context.setLineDash([5,4]);
     context.beginPath(); context.moveTo(padLeft,y); context.lineTo(w-padRight,y); context.stroke();
     context.setLineDash([]);
     context.fillText(label+' '+target.toFixed(2), padLeft+4, y-4);
   } else if(frac>1){
+    context.font = '10px -apple-system,sans-serif';
     const x = padLeft+22, y = padTop+10;
     context.beginPath();
     context.moveTo(x,y); context.lineTo(x-6,y+11); context.lineTo(x+6,y+11); context.closePath();
     context.fill();
     context.fillText(label+' '+target.toFixed(2), x+11, y+9);
   } else {
+    context.font = '10px -apple-system,sans-serif';
     const x = padLeft+22, y = padTop+plotH-10;
     context.beginPath();
     context.moveTo(x,y); context.lineTo(x-6,y-11); context.lineTo(x+6,y-11); context.closePath();
@@ -896,9 +1086,9 @@ function drawGenericTargetLine(context, target, color, label, minP, maxP, padLef
 }
 
 function drawTargetHistoryLines(context, minP, maxP, padLeft, padRight, padTop, plotH, w){
-  const shown = targetHistory.slice(0,5);
-  shown.forEach((price,i)=>{
-    const color = targetHistoryColor(i, shown.length);
+  targetHistory.forEach((price,i)=>{
+    if(!targetChecked[i]) return;
+    const color = targetHistoryColor(i, targetHistory.length);
     drawGenericTargetLine(context, price, color, 'Target '+(i+1), minP, maxP, padLeft, padRight, padTop, plotH, w);
   });
 }
@@ -1263,9 +1453,10 @@ function detectSignal(all){
 
 let alertTimeout = null;
 function showAlert(type, reason){
+  if(!alertsEnabled) return;
   const el = document.getElementById('alertPopup');
   const content = document.getElementById('alertContent');
-  const cls = type==='critical-up' ? 'pump critical' : type==='critical-down' ? 'dump critical' : type;
+  const cls = type==='critical-up' ? 'pump critical' : type==='critical-down' ? 'dump critical' : (type==='vshape'||type==='invvshape') ? 'gap' : type==='volanom' ? 'warn' : type;
   el.className = 'alertpop show '+cls;
   const titles = {
     'pump':'⚠ PUMP IMMINENT',
@@ -1273,8 +1464,12 @@ function showAlert(type, reason){
     'warn':'⏱ PRICE TO BEAT À METTRE À JOUR',
     'critical-up':'🚨 HAUSSE IMMINENTE, PRENEZ VOS DISPOSITIONS',
     'critical-down':'🚨 CHUTE IMMINENTE, PRENEZ VOS DISPOSITIONS',
+    'vshape':'⚡ MOUVEMENT EN V DÉTECTÉ',
+    'invvshape':'⚡ MOUVEMENT EN V INVERSÉ DÉTECTÉ',
+    'volanom':'⚡ VOLUME ANORMAL DÉTECTÉ',
   };
-  content.innerHTML = '<b>'+titles[type]+'</b>'+reason+(type==='warn' ? '' : ' — estimation heuristique, pas un conseil financier.');
+  const noSuffix = (type==='warn' || type==='vshape' || type==='invvshape' || type==='volanom');
+  content.innerHTML = '<b>'+titles[type]+'</b>'+reason+(noSuffix ? '' : ' — estimation heuristique, pas un conseil financier.');
   clearTimeout(alertTimeout);
   if(type !== 'warn'){
     alertTimeout = setTimeout(()=>{ el.className='alertpop'; }, 20000);
@@ -1316,6 +1511,15 @@ function connect(){
         drawProjection();
         const sig = detectSignal(buildCandles(currentSec));
         if(sig) showAlert(sig.type, sig.reason);
+
+        const vshape = detectVShape();
+        if(vshape && (now()-lastVShapeAlertAt) > 30000){
+          lastVShapeAlertAt = now();
+          const desc = vshape.type==='v_shape' ? "hausse rapide suivie d'une chute rapide" : "chute rapide suivie d'un rebond rapide";
+          showAlert(vshape.type==='v_shape'?'vshape':'invvshape', ` Mouvement en V détecté (${desc}) sur Chainlink : ${(vshape.m1*100).toFixed(3)}% puis ${(vshape.m2*100).toFixed(3)}% en ~40s. Peut évoquer un achat suivi d'une revente rapide (ou l'inverse) — pas une certitude.`);
+          recordPatternEvent('v_shape', now(), {direction:vshape.type, m1:vshape.m1, m2:vshape.m2});
+        }
+        detectChainlinkLateMove();
       }
     }
   };
@@ -1338,6 +1542,13 @@ function connectBinance(){
       if(binanceTicks.length>20000) binanceTicks.shift();
       updateGapDisplay();
       detectBinanceLateMove();
+
+      const volAnom = detectAbnormalVolume();
+      if(volAnom && (now()-lastVolAnomalyAlertAt) > 30000){
+        lastVolAnomalyAlertAt = now();
+        showAlert('volanom', ` Volume anormal détecté sur Binance : ×${volAnom.ratio.toFixed(1)} la normale sur 20s, sans mouvement de prix notable (${(volAnom.movePct*100).toFixed(3)}%). Possible absorption ou trades appariés — pas une certitude.`);
+        recordPatternEvent('abnormal_volume', now(), {ratio:volAnom.ratio});
+      }
     }
   };
   binanceWs.onerror = ()=>{ /* silencieux : si Binance est bloqué (région), l'écart reste juste indisponible */ };
@@ -1392,6 +1603,64 @@ function detectBinanceLateMove(){
     const dir = momentum>0 ? 'hausse' : 'baisse';
     showAlert(momentum>0?'critical-up':'critical-down',
       ` ${dir} rapide détectée sur Binance en fin de fenêtre (${(momentum*100).toFixed(3)}% en 5s, volume ${volSpike.toFixed(1)}×, ${info.secondsLeft}s restantes)`);
+  }
+}
+
+// ---- Détecteur de mouvement en V (Chainlink) : hausse rapide suivie d'une chute rapide (ou l'inverse)
+// sur ~40s. Peut évoquer un achat massif suivi d'une revente rapide (ou l'inverse) — pas une certitude,
+// juste une forme de mouvement observée.
+let lastVShapeAlertAt = 0;
+const V_SHAPE_THRESHOLD = 0.0012; // ~0.12% par moitié
+function detectVShape(){
+  const cutoff = now() - 40000;
+  const recent = ticks.filter(t=>t.t >= cutoff);
+  if(recent.length < 10) return null;
+  const mid = Math.floor(recent.length/2);
+  const first = recent.slice(0, mid), second = recent.slice(mid);
+  if(!first[0].v || !second[0].v) return null;
+  const m1 = (first[first.length-1].v - first[0].v)/first[0].v;
+  const m2 = (second[second.length-1].v - second[0].v)/second[0].v;
+  if(m1 > V_SHAPE_THRESHOLD && m2 < -V_SHAPE_THRESHOLD) return {type:'v_shape', m1, m2};
+  if(m1 < -V_SHAPE_THRESHOLD && m2 > V_SHAPE_THRESHOLD) return {type:'v_inv_shape', m1, m2};
+  return null;
+}
+
+// ---- Détecteur de volume anormal (Binance) sans effet sur le prix : possible absorption ou trades
+// appariés (wash trading). Sur 20s, volume nettement supérieur à la normale récente mais prix quasi stable.
+let lastVolAnomalyAlertAt = 0;
+function detectAbnormalVolume(){
+  const cutoff = now() - 20000;
+  const recent = binanceTicks.filter(t=>t.t >= cutoff);
+  if(recent.length < 10) return null;
+  const qtySum = recent.reduce((a,t)=>a+t.q, 0);
+  const baseline = binanceTicks.filter(t=>t.t >= cutoff-100000 && t.t < cutoff);
+  if(baseline.length < 10) return null;
+  const baselineAvgPer20s = (baseline.reduce((a,t)=>a+t.q,0)/baseline.length) * recent.length;
+  const ratio = baselineAvgPer20s>0 ? qtySum/baselineAvgPer20s : 1;
+  const startV = recent[0].v, endV = recent[recent.length-1].v;
+  const movePct = startV ? Math.abs((endV-startV)/startV) : 0;
+  if(ratio >= 3 && movePct < 0.0006) return {ratio, movePct};
+  return null;
+}
+
+// ---- Détecteur de mouvement brusque Chainlink (source de résolution) en toute fin de fenêtre —
+// équivalent du détecteur Binance ci-dessus, mais sur le flux qui compte réellement pour la clôture.
+let lastChainlinkLateAlertWindow = null;
+function detectChainlinkLateMove(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  if(info.secondsLeft > 15){ lastChainlinkLateAlertWindow = null; return; }
+  if(lastChainlinkLateAlertWindow === info.start) return;
+  const cutoff = now() - 5000;
+  const recent = ticks.filter(t=>t.t >= cutoff);
+  if(recent.length < 3) return;
+  const startV = recent[0].v, endV = recent[recent.length-1].v;
+  const momentum = startV ? (endV-startV)/startV : 0;
+  if(Math.abs(momentum) >= BINANCE_LATE_MOVE_THRESHOLD){
+    lastChainlinkLateAlertWindow = info.start;
+    const dir = momentum>0 ? 'hausse' : 'baisse';
+    showAlert(momentum>0?'critical-up':'critical-down',
+      ` ${dir} rapide détectée sur Chainlink (source de résolution) en fin de fenêtre (${(momentum*100).toFixed(3)}% en 5s, ${info.secondsLeft}s restantes)`);
+    recordPatternEvent('chainlink_late_move', now(), {momentum, secondsLeft: info.secondsLeft});
   }
 }
 
@@ -1812,6 +2081,8 @@ errEl.textContent = 'Chargement de l\'historique Chainlink on-chain…';
 Promise.all([loadHistory(currentSec), refreshVolumes(currentSec)]).then(()=>{
   if(errEl.textContent.startsWith('Chargement')) errEl.textContent='';
   tryAutoFillPriceToBeat();
+  backfillTargetHistory();
+  updatePatternWarningPanel();
   draw();
   drawProjection();
 }).catch(e=>{
