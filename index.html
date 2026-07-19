@@ -84,11 +84,6 @@
   .alertpop.dump{background:#2e1216;color:#ff9b9b;border:1px solid #5a1f26;}
   .alertpop.warn{background:#332a12;color:#ffd580;border:1px solid #6b551f;}
   .alertpop.gap{background:#12202e;color:#7fb8ff;border:1px solid #24425e;}
-  .gaplog{width:100%;border-collapse:collapse;font-size:11px;}
-  .gaplog th,.gaplog td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--grid);}
-  .gaplog th:first-child,.gaplog td:first-child{text-align:left;}
-  .gaplog .res-above{color:var(--up);font-weight:700;}
-  .gaplog .res-below{color:var(--down);font-weight:700;}
   .alertpop.critical{animation:alertPulse 1s ease-in-out infinite; font-size:14px;}
   @keyframes alertPulse{0%,100%{transform:translateX(-50%) scale(1);}50%{transform:translateX(-50%) scale(1.035);}}
   .alertpop b{display:block;font-size:14px;margin-bottom:2px;}
@@ -141,16 +136,16 @@
     <button class="tf-btn on" id="toggleRecenter" title="Recentrage automatique sur le direct">Recentrage: activé</button>
     <span class="sep"></span>
     <label style="font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;">
-      Seuil alerte écart:
-      <input id="gapThreshold" type="number" value="0.05" step="0.01" min="0.01" style="width:60px;background:var(--panel);color:var(--text);border:1px solid var(--grid);border-radius:6px;padding:5px 8px;font-size:12.5px;">%
+      <input type="checkbox" id="hideSR" style="width:15px;height:15px;">
+      <span>Masquer support/résistance</span>
     </label>
-    <button class="tf-btn" id="exportLogs" title="Télécharger le journal des écarts Binance/Chainlink (JSON)">⬇ Export logs</button>
     <button class="tf-btn" id="showSummary" title="Analyse en langage simple des observations de cette session">📋 Résumé</button>
   </div>
 
   <div class="charts">
     <div class="panel">
       <div class="ohlc" id="ohlc"></div>
+      <div class="note" id="olderTargetsPanel" style="display:none;"></div>
       <div class="chart-wrap">
         <canvas id="chart" height="460"></canvas>
       </div>
@@ -186,7 +181,6 @@
         Recalculée à chaque changement de période. Pas une garantie de prix futur.
       </div>
       <div class="note" id="insightsPanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
-      <div class="note" id="gapLogPanel" style="display:none;margin-top:8px;"></div>
       <div class="note" id="summaryPanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.25);border-radius:6px;padding:10px 12px;font-size:12.5px;line-height:1.7;"></div>
     </div>
   </div>
@@ -445,6 +439,21 @@ let targetPrice = null;
 const targetInput = document.getElementById('targetInput');
 let estimatedPTB = false; // vrai tant que la valeur affichée vient d'une estimation on-chain, pas d'un tick live confirmé
 
+let targetHistory = []; // targets confirmés des fenêtres précédentes, du plus récent au plus ancien (max 10)
+function pushTargetHistory(price){
+  if(price===null || price===undefined || isNaN(price)) return;
+  targetHistory.unshift(price);
+  if(targetHistory.length>10) targetHistory.length = 10;
+  renderOlderTargetsPanel();
+}
+function renderOlderTargetsPanel(){
+  const panel = document.getElementById('olderTargetsPanel');
+  const older = targetHistory.slice(5,10);
+  if(older.length===0){ panel.style.display='none'; return; }
+  panel.style.display='block';
+  panel.innerHTML = '<b style="color:var(--muted);">Autres targets (6-10) :</b> ' + older.map(v=>v.toFixed(2)).join(' · ');
+}
+
 let autoFillState = { windowStart: null, filled: false, onchainCheckStarted: false };
 function ensureAutoFillWindow(windowStart){
   if(autoFillState.windowStart !== windowStart){
@@ -566,20 +575,8 @@ let windowTrack = null;
 let sessionWindows = [];
 
 function finalizeWindowTrack(wt){
-  // journal des écarts Binance/Chainlink pour cette fenêtre, indépendant du PTB (même si le PTB manque)
-  if(Object.keys(wt.gapCheckpoints||{}).length > 0 || wt.finalGap !== null){
-    const lateSig = lateSignalFlags[wt.windowStart];
-    gapLog.push({
-      windowStart: wt.windowStart,
-      gapCheckpoints: wt.gapCheckpoints,
-      finalGap: wt.finalGap,
-      result: wt.lastRel, // 'above'/'below' le PTB à la clôture, null si PTB indisponible
-      lateSignal: lateSig ? {momentum: lateSig.momentum, secondsLeft: lateSig.secondsLeft} : null,
-    });
-    delete lateSignalFlags[wt.windowStart];
-    if(gapLog.length > 200) gapLog.shift();
-    renderGapLogTable();
-  }
+  delete lateSignalFlags[wt.windowStart];
+  if(wt.ptb !== null) pushTargetHistory(wt.ptb);
 
   if(wt.ptb === null || !wt.lastRel) return; // pas assez de données pour compter cette fenêtre (analyse retournement)
   const record = {
@@ -722,43 +719,6 @@ function renderSummaryPanel(){
 }
 document.getElementById('showSummary').onclick = renderSummaryPanel;
 
-function renderGapLogTable(){
-  const panel = document.getElementById('gapLogPanel');
-  if(gapLog.length === 0){ panel.style.display='none'; return; }
-  panel.style.display = 'block';
-  const stats = computeLateSignalStats();
-  const statsHtml = stats
-    ? `<div style="margin:6px 0;padding:6px 8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;">
-         Fiabilité du signal tardif Binance : <b style="color:${stats.pct>=60?'#0ecb81':stats.pct<=40?'#f6465d':'#eaecef'}">${stats.pct}%</b>
-         (${stats.correct}/${stats.n} fenêtre(s) où le signal a prédit correctement le côté du PTB à la clôture)
-       </div>`
-    : `<div style="margin:6px 0;font-size:11px;opacity:.7;">Pas encore assez de fenêtres avec signal tardif + résultat confirmé pour calculer une fiabilité.</div>`;
-  const rows = gapLog.slice(-15).reverse().map(g=>{
-    const cps = CHECKPOINT_MARKS.map(m=>g.gapCheckpoints[m]!==undefined ? g.gapCheckpoints[m].toFixed(3)+'%' : '—').join(' / ');
-    const resClass = g.result==='above' ? 'res-above' : g.result==='below' ? 'res-below' : '';
-    const resText = g.result==='above' ? 'Above PTB' : g.result==='below' ? 'Below PTB' : '—';
-    const sigText = g.lateSignal ? `${g.lateSignal.momentum>0?'▲':'▼'} ${(g.lateSignal.momentum*100).toFixed(3)}% @${g.lateSignal.secondsLeft}s` : '—';
-    return `<tr><td>${fmtTahiti(g.windowStart, false, true)}</td><td>${cps}</td><td>${g.finalGap!==null?g.finalGap.toFixed(3)+'%':'—'}</td><td>${sigText}</td><td class="${resClass}">${resText}</td></tr>`;
-  }).join('');
-  panel.innerHTML = `<b style="color:#7f95ff;">Journal écarts Binance/Chainlink (${gapLog.length} fenêtre(s))</b>
-    ${statsHtml}
-    <table class="gaplog"><thead><tr><th>Fenêtre</th><th>Écart @30/20/10/5/2s</th><th>Écart final</th><th>Signal tardif Binance</th><th>Résultat</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
-}
-
-document.getElementById('exportLogs').onclick = ()=>{
-  const data = JSON.stringify(gapLog, null, 2);
-  const blob = new Blob([data], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'cryptor_gap_log_'+new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')+'.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-};
-
 // Ne remonte un "conseil" que s'il sort clairement du hasard (un coin-flip donnerait ~50%),
 // avec un échantillon suffisant. Sinon, rien à dire de fiable pour l'instant.
 const MIN_SAMPLE = 5;
@@ -852,6 +812,12 @@ document.getElementById('showMA').addEventListener('change', (e)=>{
   draw();
 });
 
+let hideSR = false;
+document.getElementById('hideSR').addEventListener('change', (e)=>{
+  hideSR = e.target.checked;
+  draw();
+});
+
 function drawTarget(context, target, minP, maxP, padLeft, padRight, padTop, plotH, w){
   if(target===null || target===undefined || isNaN(target)) return;
   const range = (maxP-minP)||1;
@@ -881,6 +847,60 @@ function drawTarget(context, target, minP, maxP, padLeft, padRight, padTop, plot
     context.fillText('Target '+target.toFixed(2), x+11, y-4);
   }
   context.restore();
+}
+
+function targetHistoryColor(i, total){
+  // i=0 (le plus récent) = blanc, dégradé vers gris clair puis gris foncé
+  const stops = [[255,255,255],[170,170,170],[80,80,80]];
+  const t = total<=1 ? 0 : i/(total-1);
+  let c;
+  if(t<=0.5){
+    const lt = t/0.5;
+    c = stops[0].map((v,k)=>Math.round(v+(stops[1][k]-v)*lt));
+  } else {
+    const lt = (t-0.5)/0.5;
+    c = stops[1].map((v,k)=>Math.round(v+(stops[2][k]-v)*lt));
+  }
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function drawGenericTargetLine(context, target, color, label, minP, maxP, padLeft, padRight, padTop, plotH, w){
+  if(target===null || target===undefined || isNaN(target)) return;
+  const range = (maxP-minP)||1;
+  const frac = (target-minP)/range;
+  context.save();
+  context.strokeStyle = color;
+  context.fillStyle = color;
+  context.font = '10px -apple-system,sans-serif';
+  context.textAlign = 'left';
+  if(frac>=0 && frac<=1){
+    const y = padTop + plotH - frac*plotH;
+    context.setLineDash([5,4]); context.lineWidth=1;
+    context.beginPath(); context.moveTo(padLeft,y); context.lineTo(w-padRight,y); context.stroke();
+    context.setLineDash([]);
+    context.fillText(label+' '+target.toFixed(2), padLeft+4, y-4);
+  } else if(frac>1){
+    const x = padLeft+22, y = padTop+10;
+    context.beginPath();
+    context.moveTo(x,y); context.lineTo(x-6,y+11); context.lineTo(x+6,y+11); context.closePath();
+    context.fill();
+    context.fillText(label+' '+target.toFixed(2), x+11, y+9);
+  } else {
+    const x = padLeft+22, y = padTop+plotH-10;
+    context.beginPath();
+    context.moveTo(x,y); context.lineTo(x-6,y-11); context.lineTo(x+6,y-11); context.closePath();
+    context.fill();
+    context.fillText(label+' '+target.toFixed(2), x+11, y-4);
+  }
+  context.restore();
+}
+
+function drawTargetHistoryLines(context, minP, maxP, padLeft, padRight, padTop, plotH, w){
+  const shown = targetHistory.slice(0,5);
+  shown.forEach((price,i)=>{
+    const color = targetHistoryColor(i, shown.length);
+    drawGenericTargetLine(context, price, color, 'Target '+(i+1), minP, maxP, padLeft, padRight, padTop, plotH, w);
+  });
 }
 
 function aggregateCandles(base, bucketSeconds){
@@ -1253,9 +1273,8 @@ function showAlert(type, reason){
     'warn':'⏱ PRICE TO BEAT À METTRE À JOUR',
     'critical-up':'🚨 HAUSSE IMMINENTE, PRENEZ VOS DISPOSITIONS',
     'critical-down':'🚨 CHUTE IMMINENTE, PRENEZ VOS DISPOSITIONS',
-    'gap':'⚡ ÉCART BINANCE / CHAINLINK',
   };
-  content.innerHTML = '<b>'+titles[type]+'</b>'+reason+(type==='warn' || type==='gap' ? '' : ' — estimation heuristique, pas un conseil financier.');
+  content.innerHTML = '<b>'+titles[type]+'</b>'+reason+(type==='warn' ? '' : ' — estimation heuristique, pas un conseil financier.');
   clearTimeout(alertTimeout);
   if(type !== 'warn'){
     alertTimeout = setTimeout(()=>{ el.className='alertpop'; }, 20000);
@@ -1343,12 +1362,6 @@ function updateGapDisplay(){
   if(gap===null) return;
   gapDisplayEl.textContent = (gap>=0?'+':'')+gap.toFixed(4)+'% écart';
   gapDisplayEl.className = 'chg '+(gap>=0?'up':'down');
-
-  const threshold = parseFloat(document.getElementById('gapThreshold').value)||0.05;
-  if(Math.abs(gap) >= threshold && (now()-lastGapAlertAt) > 20000){
-    lastGapAlertAt = now();
-    showAlert('gap', ` Binance/Chainlink: ${(gap>=0?'+':'')}${gap.toFixed(4)}% — Binance ${gap>=0?'au-dessus':'en-dessous'} de Chainlink`);
-  }
 }
 
 // ---- Détecteur de mouvement brusque Binance dans les toutes dernières secondes de la fenêtre ----
@@ -1613,22 +1626,24 @@ function draw(){
   }
 
   // support/resistance
-  const {support, resist} = computeSR(all, Math.min(150, all.length));
-  if(support!==null){
-    const y = yFor(support);
-    ctx.strokeStyle='rgba(14,203,129,.7)'; ctx.setLineDash([6,4]); ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle='#0ecb81'; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='left';
-    ctx.fillText('Support '+support.toFixed(1), padLeft+4, y-4);
-  }
-  if(resist!==null){
-    const y = yFor(resist);
-    ctx.strokeStyle='rgba(246,70,93,.7)'; ctx.setLineDash([6,4]); ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle='#f6465d'; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='left';
-    ctx.fillText('Résistance '+resist.toFixed(1), padLeft+4, y+12);
+  if(!hideSR){
+    const {support, resist} = computeSR(all, Math.min(150, all.length));
+    if(support!==null){
+      const y = yFor(support);
+      ctx.strokeStyle='rgba(14,203,129,.7)'; ctx.setLineDash([6,4]); ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#0ecb81'; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='left';
+      ctx.fillText('Support '+support.toFixed(1), padLeft+4, y-4);
+    }
+    if(resist!==null){
+      const y = yFor(resist);
+      ctx.strokeStyle='rgba(246,70,93,.7)'; ctx.setLineDash([6,4]); ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(padLeft,y); ctx.lineTo(w-padRight,y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle='#f6465d'; ctx.font='10px -apple-system,sans-serif'; ctx.textAlign='left';
+      ctx.fillText('Résistance '+resist.toFixed(1), padLeft+4, y+12);
+    }
   }
 
   // candles
@@ -1665,6 +1680,7 @@ function draw(){
     drawMA(ma99, getComputedStyle(document.documentElement).getPropertyValue('--ma99').trim());
   }
 
+  drawTargetHistoryLines(ctx, minP, maxP, padLeft, padRight, padTop, plotH, w);
   drawTarget(ctx, targetPrice, minP, maxP, padLeft, padRight, padTop, plotH, w);
 
   // time axis labels
