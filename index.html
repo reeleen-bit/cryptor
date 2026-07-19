@@ -209,6 +209,7 @@ const TFS = [
   {label:'1J', seconds:86400},
 ];
 let currentSec = 2;
+const PAGE_OPEN_TIME = Date.now(); // les traits de session ne sont tracés qu'à partir de ce moment (pas sur l'historique rechargé au démarrage)
 let alertsEnabled = true; // doit être défini tôt : utilisé dès le premier tickCountdown() au chargement
 let lateSignalFlags = {}; // windowStart -> {momentum, secondsLeft} ; doit aussi être défini tôt (utilisé dans finalizeWindowTrack)
 let ticks = [];
@@ -1989,27 +1990,82 @@ function draw(){
     ctx.fillText(p.toFixed(1), w-padRight+6, y+4);
   }
 
-  // traits verticaux de sessions (tranches de 5 min, mêmes limites que les fenêtres Polymarket)
-  if(showSessions && candles.length>0){
-    const candleMs = currentSec*1000;
-    const bucketMs = WINDOW_SECONDS*1000;
-    const startTime = candles[0].time;
-    const lastCandleTime = candles[candles.length-1].time + candleMs;
-    const firstBoundary = Math.ceil(startTime/bucketMs)*bucketMs;
+  // traits verticaux de sessions (tranches de 5 min) — calculées uniquement à partir du temps universel
+  // (UTC epoch, Math.floor(ms/300000)). Position calculée par INTERPOLATION entre les deux bougies
+  // réelles qui encadrent chaque limite de 5 min (pas un index de bougie arrondi), pour garantir
+  // exactement une ligne toutes les 5 minutes réelles, quelle que soit la résolution affichée.
+  const bucketMs = WINDOW_SECONDS*1000;
+  if(showSessions && candles.length>1){
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,.14)';
-    ctx.setLineDash([2,4]);
-    ctx.lineWidth = 1;
-    for(let t=firstBoundary; t<lastCandleTime; t+=bucketMs){
-      const j = (t-startTime)/candleMs;
-      const x = padLeft + j*candleW - offsetPx;
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    const firstBoundary = Math.max(Math.ceil(candles[0].time/bucketMs)*bucketMs, Math.ceil(PAGE_OPEN_TIME/bucketMs)*bucketMs);
+    const lastTime = candles[candles.length-1].time;
+    for(let t=firstBoundary; t<=lastTime; t+=bucketMs){
+      // trouve les deux bougies réelles qui encadrent l'instant t
+      let k = 0;
+      while(k<candles.length-1 && candles[k+1].time <= t) k++;
+      if(candles[k].time > t) continue; // t est avant la première bougie visible
+      const nextTime = k+1<candles.length ? candles[k+1].time : candles[k].time + (currentSec*1000);
+      const span = nextTime - candles[k].time;
+      const frac = span>0 ? (t-candles[k].time)/span : 0;
+      const j = k + frac;
+      const x = xForIdx(j) - candleW/2;
       if(x < padLeft-4 || x > w-padRight+4) continue;
       ctx.beginPath();
       ctx.moveTo(x, padTop);
       ctx.lineTo(x, padTop+plotH);
       ctx.stroke();
+
+      // heure de la limite, à GAUCHE de la ligne (blanc)
+      ctx.save();
+      ctx.font = '11px -apple-system,sans-serif';
+      const label = 'Session Précédente — '+fmtTahiti(t, false, true);
+      const textWidth = ctx.measureText(label).width;
+      ctx.translate(x-13, padTop+plotH-6);
+      ctx.rotate(-Math.PI/2);
+      ctx.fillStyle = 'rgba(11,14,17,.8)';
+      ctx.fillRect(-2, -12, textWidth+4, 15);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
+
+      // Price to Beat de la session suivante, à DROITE de la ligne (orange) — c'est exactement le
+      // premier tick réel après la limite, donc identique au Price to Beat que Polymarket affichera
+      // pour la nouvelle fenêtre. Zoome et passe à l'horizontale quand le curseur s'en approche.
+      if(k+1 < candles.length){
+        const ptbPrice = candles[k+1].close;
+        const ptbLabel = 'Price to Beat '+ptbPrice.toFixed(2);
+        const hovered = !!(hoverPx && Math.abs(hoverPx.x - (x+13)) < 18 && hoverPx.y >= padTop && hoverPx.y <= padTop+plotH);
+        if(hovered){
+          ctx.save();
+          ctx.font = 'bold 15px -apple-system,sans-serif';
+          const ptbWidth = ctx.measureText(ptbLabel).width;
+          let lx = x+15;
+          if(lx+ptbWidth > w-padRight) lx = x-15-ptbWidth;
+          const ly = Math.min(Math.max(hoverPx.y, padTop+14), padTop+plotH-4);
+          ctx.fillStyle = 'rgba(11,14,17,.9)';
+          ctx.fillRect(lx-3, ly-14, ptbWidth+6, 18);
+          ctx.fillStyle = '#ffb020';
+          ctx.textAlign = 'left';
+          ctx.fillText(ptbLabel, lx, ly);
+          ctx.restore();
+        } else {
+          ctx.save();
+          ctx.font = '11px -apple-system,sans-serif';
+          const ptbWidth = ctx.measureText(ptbLabel).width;
+          ctx.translate(x+13, padTop+plotH-6);
+          ctx.rotate(-Math.PI/2);
+          ctx.fillStyle = 'rgba(11,14,17,.8)';
+          ctx.fillRect(-2, -12, ptbWidth+4, 15);
+          ctx.fillStyle = '#ffb020';
+          ctx.textAlign = 'left';
+          ctx.fillText(ptbLabel, 0, 0);
+          ctx.restore();
+        }
+      }
     }
-    ctx.setLineDash([]);
     ctx.restore();
   }
 
