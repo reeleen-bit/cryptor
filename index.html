@@ -182,6 +182,7 @@
         Régression linéaire sur les dernières clôtures de la période sélectionnée, cône d'incertitude basé sur l'ATR.
         Recalculée à chaque changement de période. Pas une garantie de prix futur.
       </div>
+      <div class="note" id="signalPanel" style="display:none;margin-top:8px;background:rgba(255,176,32,.07);border:1px solid rgba(255,176,32,.35);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.7;"></div>
       <div class="note" id="lastMinutesAdvicePanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.3);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
       <div class="note" id="insightsPanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
       <div class="note" id="reversalWarningPanel" style="display:none;margin-top:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
@@ -671,6 +672,7 @@ let sessionWindows = [];
 
 function finalizeWindowTrack(wt){
   delete lateSignalFlags[wt.windowStart];
+  resolveSignalOutcome(wt);
   // Final Price de la fenêtre qui vient de se clôturer = le tick Chainlink pile à la limite de fenêtre
   // (le même tick qui sert aussi de Price to Beat pour la fenêtre suivante — flux continu). C'est
   // exactement la valeur que Polymarket utilise pour résoudre le marché, pas une approximation.
@@ -983,6 +985,7 @@ function tickCountdown(){
   tryAutoFillPriceToBeat();
   updateWindowTracking();
   updateLastMinutesAdvice();
+  updateSignalEngine();
 }
 tickCountdown();
 function scheduleNextTick(){
@@ -1043,6 +1046,189 @@ function updateLastMinutesAdvice(){
   const color = pct>0 ? 'var(--up)' : 'var(--down)';
   panel.style.display='block';
   panel.innerHTML = `<span style="color:${color};">💡 Opportunité : le cours est ${strength} ${dir} du Price to Beat (${pct>=0?'+':''}${pct.toFixed(3)}%) à ${info.secondsLeft}s de la clôture — camp "${side}" semble avantagé pour l'instant (pas une garantie, le prix peut encore bouger).</span>`;
+}
+
+// ================== MOTEUR DE SIGNAUX FORTS (proba + edge + lead + backtest + score) ==================
+
+// ---- 1) Probabilité statistique de clôture Up : P = Phi(gap / (sigma * sqrt(t restant))) ----
+function normCdf(x){
+  // approximation d'Abramowitz-Stegun de la fonction de répartition normale
+  const t = 1/(1+0.2316419*Math.abs(x));
+  const d = 0.3989423*Math.exp(-x*x/2);
+  let p = d*t*(0.3193815+t*(-0.3565638+t*(1.781478+t*(-1.821256+t*1.330274))));
+  return x>0 ? 1-p : p;
+}
+function computeSigmaPerSec(){
+  // volatilité par seconde des ticks Chainlink sur les 10 dernières minutes
+  const cutoff = now() - 600000;
+  const recent = ticks.filter(t=>t.t >= cutoff);
+  if(recent.length < 20) return null;
+  const rets = [];
+  for(let i=1;i<recent.length;i++){
+    const dt = (recent[i].t - recent[i-1].t)/1000;
+    if(dt <= 0 || !recent[i-1].v) continue;
+    const r = (recent[i].v - recent[i-1].v)/recent[i-1].v;
+    rets.push(r/Math.sqrt(dt)); // normalisé par seconde
+  }
+  if(rets.length < 10) return null;
+  const mean = rets.reduce((a,b)=>a+b,0)/rets.length;
+  const variance = rets.reduce((a,b)=>a+(b-mean)*(b-mean),0)/rets.length;
+  return Math.sqrt(variance);
+}
+function computeProbUp(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  if(targetPrice===null || estimatedPTB || !ticks.length) return null;
+  const current = ticks[ticks.length-1].v;
+  const gap = (current-targetPrice)/targetPrice;
+  const sigma = computeSigmaPerSec();
+  if(sigma===null || sigma===0) return null;
+  const t = Math.max(1, info.secondsLeft);
+  const z = gap/(sigma*Math.sqrt(t));
+  return {prob: normCdf(z), gap, sigma, secondsLeft: info.secondsLeft};
+}
+
+// ---- 2) Cotes du marché Polymarket courant (CLOB midpoint du token "Up") ----
+let marketOdds = {windowStart:null, tokenIdUp:null, mid:null, lastFetch:0, failed:false};
+async function fetchCurrentMarketOdds(){
+  const info = getWindowInfo(WINDOW_SECONDS);
+  const nowMs = now();
+  if(marketOdds.windowStart !== info.start){
+    marketOdds = {windowStart: info.start, tokenIdUp:null, mid:null, lastFetch:0, failed:false};
+  }
+  if(marketOdds.failed || nowMs - marketOdds.lastFetch < 15000) return;
+  marketOdds.lastFetch = nowMs;
+  try{
+    if(!marketOdds.tokenIdUp){
+      // marchés BTC Up/Down 5 min : endDate = fin de la fenêtre courante
+      const endIso = new Date(info.end).toISOString();
+      const url = 'https://gamma-api.polymarket.com/markets?closed=false&limit=100&tag_id=21&end_date_min='+encodeURIComponent(new Date(info.end-1000).toISOString())+'&end_date_max='+encodeURIComponent(endIso);
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('gamma '+res.status);
+      const markets = await res.json();
+      const m = markets.find(mk=>/bitcoin|btc/i.test(mk.question||'') && /up or down|up-or-down/i.test((mk.question||'')+(mk.slug||'')));
+      if(!m || !m.clobTokenIds) return; // marché pas encore listé, on retentera
+      const ids = typeof m.clobTokenIds==='string' ? JSON.parse(m.clobTokenIds) : m.clobTokenIds;
+      // outcome[0] = "Up" par convention sur ces marchés
+      marketOdds.tokenIdUp = ids[0];
+    }
+    const res2 = await fetch('https://clob.polymarket.com/midpoint?token_id='+marketOdds.tokenIdUp);
+    if(!res2.ok) throw new Error('clob '+res2.status);
+    const j = await res2.json();
+    const mid = parseFloat(j.mid);
+    if(!isNaN(mid)) marketOdds.mid = mid;
+  }catch(e){
+    // CORS ou API indisponible : on n'insiste pas cette fenêtre, l'outil reste fonctionnel sans edge
+    if(String(e).includes('CORS') || String(e).includes('Failed to fetch')) marketOdds.failed = true;
+  }
+}
+
+// ---- 3) Lead Binance : mouvement Binance des 10 dernières secondes pas encore répercuté sur Chainlink ----
+function computeBinanceLead(){
+  if(ticks.length<3 || binanceTicks.length<3) return null;
+  const cutoff = now() - 10000;
+  const bRecent = binanceTicks.filter(t=>t.t>=cutoff);
+  const cRecent = ticks.filter(t=>t.t>=cutoff);
+  if(bRecent.length<3 || cRecent.length<2) return null;
+  const bRet = (bRecent[bRecent.length-1].v - bRecent[0].v)/bRecent[0].v;
+  const cRet = (cRecent[cRecent.length-1].v - cRecent[0].v)/cRecent[0].v;
+  return bRet - cRet; // >0 : Binance a monté plus que Chainlink -> rattrapage haussier probable
+}
+
+// ---- 4) Backtest automatique des signaux forts ----
+const SIGNAL_STATS_KEY = 'cryptor_signal_stats_v1';
+let pendingSignals = {}; // windowStart -> {side, score, prob}
+function loadSignalStats(){
+  try{ const raw = localStorage.getItem(SIGNAL_STATS_KEY); return raw ? JSON.parse(raw) : {up:{n:0,w:0}, down:{n:0,w:0}}; }
+  catch(e){ return {up:{n:0,w:0}, down:{n:0,w:0}}; }
+}
+function saveSignalStats(s){ try{ localStorage.setItem(SIGNAL_STATS_KEY, JSON.stringify(s)); }catch(e){} }
+function signalDisabled(side){
+  const s = loadSignalStats()[side];
+  return s && s.n>=10 && (s.w/s.n)<0.5;
+}
+function resolveSignalOutcome(wt){
+  const sig = pendingSignals[wt.windowStart];
+  if(!sig || !wt.lastRel) { delete pendingSignals[wt.windowStart]; return; }
+  const won = (sig.side==='up' && wt.lastRel==='above') || (sig.side==='down' && wt.lastRel==='below');
+  const stats = loadSignalStats();
+  stats[sig.side].n++;
+  if(won) stats[sig.side].w++;
+  saveSignalStats(stats);
+  delete pendingSignals[wt.windowStart];
+}
+
+// ---- 5) Score composite 0-100 (côté Up) + panneau + alerte signal fort ----
+const SIGNAL_STRONG = 75; // seuil score fort (symétrique : <=25 pour Down)
+const EDGE_MIN = 0.05;    // 5 points d'écart minimum vs cote marché pour parler d'edge
+let lastStrongAlertWindow = null;
+function computeCompositeScore(){
+  const p = computeProbUp();
+  if(!p) return null;
+  let score = p.prob; // base : probabilité statistique
+  const lead = computeBinanceLead();
+  if(lead!==null){
+    // un lead de 0.05% pousse le score d'environ 8 points, plafonné à ±12
+    score += Math.max(-0.12, Math.min(0.12, lead*160));
+  }
+  // biais des combinaisons historiques notables (moteur adaptatif existant)
+  const notable = findNotableCombos();
+  if(notable.length){
+    const top = notable[0];
+    const bias = (top.pct-50)/100*0.2; // max ±10 points
+    score += bias;
+  }
+  score = Math.max(0, Math.min(1, score));
+  return {score: Math.round(score*100), prob: p.prob, gap: p.gap, secondsLeft: p.secondsLeft, lead};
+}
+function updateSignalEngine(){
+  const panel = document.getElementById('signalPanel');
+  if(!alertsEnabled){ panel.style.display='none'; return; }
+  fetchCurrentMarketOdds();
+  const c = computeCompositeScore();
+  if(!c){ panel.style.display='none'; return; }
+  const info = getWindowInfo(WINDOW_SECONDS);
+  const stats = loadSignalStats();
+  const wr = s=> s.n ? Math.round(s.w/s.n*100)+'% ('+s.w+'/'+s.n+')' : 'aucun historique';
+
+  const side = c.score>=50 ? 'up' : 'down';
+  const sideScore = c.score>=50 ? c.score : 100-c.score;
+  const sideLabel = side==='up' ? 'Up' : 'Down';
+  const color = side==='up' ? 'var(--up)' : 'var(--down)';
+
+  // edge vs cote marché
+  let edgeHtml = '';
+  let hasEdge = null; // null = cotes indisponibles
+  if(marketOdds.mid!==null){
+    const myProbSide = side==='up' ? c.prob : 1-c.prob;
+    const marketProbSide = side==='up' ? marketOdds.mid : 1-marketOdds.mid;
+    const edge = myProbSide - marketProbSide;
+    hasEdge = edge >= EDGE_MIN;
+    const edgeColor = hasEdge ? 'var(--up)' : '#aaa';
+    edgeHtml = `<div>Cote marché "${sideLabel}" : ${(marketProbSide*100).toFixed(0)}¢ — mon estimation : ${(myProbSide*100).toFixed(0)}% → <span style="color:${edgeColor};">edge ${edge>=0?'+':''}${(edge*100).toFixed(1)} pts${hasEdge?' ✔':' (insuffisant)'}</span></div>`;
+  } else if(marketOdds.failed){
+    edgeHtml = `<div style="color:#888;">Cotes Polymarket inaccessibles depuis ce navigateur (CORS) — edge non calculable.</div>`;
+  } else {
+    edgeHtml = `<div style="color:#888;">Cotes du marché en cours de récupération…</div>`;
+  }
+
+  const disabled = signalDisabled(side);
+  const strong = sideScore>=SIGNAL_STRONG && info.secondsLeft<=150 && !disabled && (hasEdge!==false);
+
+  panel.style.display='block';
+  panel.innerHTML =
+    `<div><b style="color:${color};">Score composite : ${sideScore}/100 côté "${sideLabel}"</b>${strong?' — <b style="color:'+color+';">SIGNAL FORT</b>':''}</div>`+
+    `<div>Proba statistique Up : ${(c.prob*100).toFixed(1)}% (écart ${(c.gap*100).toFixed(3)}%, ${c.secondsLeft}s restantes)</div>`+
+    (c.lead!==null?`<div>Lead Binance→Chainlink : ${(c.lead*100).toFixed(3)}% non répercuté</div>`:'')+
+    edgeHtml+
+    `<div style="color:#888;">Historique signaux forts — Up : ${wr(stats.up)} · Down : ${wr(stats.down)}${disabled?' — <span style="color:var(--down);">signal "'+sideLabel+'" suspendu (winrate <50%)</span>':''}</div>`+
+    `<div style="color:#666;font-size:11px;">Estimation heuristique, pas un conseil financier.</div>`;
+
+  if(strong && lastStrongAlertWindow!==info.start){
+    lastStrongAlertWindow = info.start;
+    pendingSignals[info.start] = {side, score: sideScore, prob: c.prob};
+    showAlert(side==='up'?'critical-up':'critical-down',
+      ` SIGNAL FORT ${sideLabel} : score ${sideScore}/100, proba ${(100*(side==='up'?c.prob:1-c.prob)).toFixed(0)}%${marketOdds.mid!==null?', edge confirmé vs cote marché':''} (${info.secondsLeft}s restantes)`);
+  }
 }
 
 function drawTarget(context, target, minP, maxP, padLeft, padRight, padTop, plotH, w){
