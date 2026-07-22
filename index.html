@@ -182,6 +182,7 @@
         Régression linéaire sur les dernières clôtures de la période sélectionnée, cône d'incertitude basé sur l'ATR.
         Recalculée à chaque changement de période. Pas une garantie de prix futur.
       </div>
+      <div class="note" id="proAdvicePanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.06);border:1px solid rgba(127,149,255,.35);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.7;"></div>
       <div class="note" id="signalPanel" style="display:none;margin-top:8px;background:rgba(255,176,32,.07);border:1px solid rgba(255,176,32,.35);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.7;"></div>
       <div class="note" id="lastMinutesAdvicePanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.3);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
       <div class="note" id="insightsPanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.08);border:1px solid rgba(127,149,255,.25);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
@@ -985,6 +986,7 @@ function tickCountdown(){
   tryAutoFillPriceToBeat();
   updateWindowTracking();
   updateLastMinutesAdvice();
+  updateProAdvice();
   updateSignalEngine();
 }
 tickCountdown();
@@ -1024,6 +1026,7 @@ document.getElementById('toggleAlerts').onclick = ()=>{
   }
   updatePatternWarningPanel();
   updateLastMinutesAdvice();
+  updateProAdvice();
 };
 
 // ---- Conseil dans les 2 dernières minutes de la fenêtre : signale une "opportunité" quand le cours
@@ -1046,6 +1049,94 @@ function updateLastMinutesAdvice(){
   const color = pct>0 ? 'var(--up)' : 'var(--down)';
   panel.style.display='block';
   panel.innerHTML = `<span style="color:${color};">💡 Opportunité : le cours est ${strength} ${dir} du Price to Beat (${pct>=0?'+':''}${pct.toFixed(3)}%) à ${info.secondsLeft}s de la clôture — camp "${side}" semble avantagé pour l'instant (pas une garantie, le prix peut encore bouger).</span>`;
+}
+
+// ================== CONSEILS EFFECTIFS (sous la projection statistique) ==================
+function computeProbUpDrift(){
+  // Proba Up avec terme de drift = momentum Binance 60s (plus précis en fin de fenêtre)
+  const info = getWindowInfo(WINDOW_SECONDS);
+  if(targetPrice===null || estimatedPTB || !ticks.length) return null;
+  const current = ticks[ticks.length-1].v;
+  const gap = (current-targetPrice)/targetPrice;
+  const sigma = computeSigmaPerSec();
+  if(!sigma) return null;
+  const t = Math.max(1, info.secondsLeft);
+  let drift = 0;
+  const cutoff = now()-60000;
+  const bRecent = binanceTicks.filter(x=>x.t>=cutoff);
+  if(bRecent.length>=3 && bRecent[0].v){
+    drift = ((bRecent[bRecent.length-1].v - bRecent[0].v)/bRecent[0].v)/60; // par seconde
+  }
+  const z = (gap + drift*t)/(sigma*Math.sqrt(t));
+  return {prob: normCdf(z), gap, sigma, t, drift, current};
+}
+function detectChainlinkFreeze(){
+  // Chainlink "gelé" : pas de tick depuis >12s alors que Binance a bougé < seuil de déviation (0.5%)
+  if(!ticks.length || !binanceTicks.length) return null;
+  const lastCl = ticks[ticks.length-1];
+  const age = (now()-lastCl.t)/1000;
+  if(age < 12) return null;
+  const b = binanceTicks[binanceTicks.length-1].v;
+  const dev = Math.abs((b-lastCl.v)/lastCl.v);
+  if(dev < 0.005) return {age: Math.round(age), dev};
+  return null;
+}
+function updateProAdvice(){
+  const panel = document.getElementById('proAdvicePanel');
+  if(!panel) return;
+  const info = getWindowInfo(WINDOW_SECONDS);
+  const p = computeProbUpDrift();
+  if(!p){ panel.style.display='none'; return; }
+  const side = p.prob>=0.5 ? 'Up' : 'Down';
+  const probSide = side==='Up' ? p.prob : 1-p.prob;
+  const color = side==='Up' ? 'var(--up)' : 'var(--down)';
+  const pctSide = (probSide*100).toFixed(0);
+
+  // 1) Conseil principal selon la confiance et le temps restant
+  let advice, adviceColor = color;
+  if(probSide >= 0.85 && info.secondsLeft <= 60){
+    advice = `✅ Miser "${side}" : ${pctSide}% de proba à ${info.secondsLeft}s de la clôture. Zone la plus fiable.`;
+  } else if(probSide >= 0.70 && info.secondsLeft <= 150){
+    advice = `👍 "${side}" favorisé à ${pctSide}%. Miser petit, ou attendre <60s pour confirmer.`;
+  } else if(probSide < 0.60){
+    advice = `⏸ Ne pas miser : proba trop proche de 50/50 (${pctSide}% "${side}"). Attendre.`;
+    adviceColor = '#aaa';
+  } else {
+    advice = `⏳ "${side}" à ${pctSide}%, mais il reste ${info.secondsLeft}s : trop tôt, le prix peut encore tourner.`;
+    adviceColor = '#ccc';
+  }
+
+  // 2) Gel Chainlink terminal (quasi free lunch en toute fin de fenêtre)
+  const freeze = detectChainlinkFreeze();
+  let freezeHtml = '';
+  if(freeze && info.secondsLeft <= 45 && Math.abs(p.gap) > 2*p.sigma*Math.sqrt(p.t)){
+    freezeHtml = `<div style="color:var(--up);"><b>🎯 SNIPER :</b> Chainlink figé depuis ${freeze.age}s (écart Binance ${(freeze.dev*100).toFixed(2)}% &lt; 0.50% de déviation) et gap &gt; 2σ — la clôture "${side}" est quasi acquise (~85-95%).</div>`;
+  }
+
+  // 3) Edge vs cote marché + mise quart-Kelly
+  let kellyHtml = '';
+  if(marketOdds.mid!==null){
+    const price = side==='Up' ? marketOdds.mid : 1-marketOdds.mid;
+    const edge = probSide - price;
+    if(edge >= 0.05 && price>0 && price<1){
+      const kelly = Math.max(0, (probSide - price)/(1 - price)) * 0.25;
+      kellyHtml = `<div>💰 Edge +${(edge*100).toFixed(1)} pts vs cote (${(price*100).toFixed(0)}¢) → mise conseillée : <b>${(kelly*100).toFixed(1)}% du capital</b> (quart-Kelly).</div>`;
+    } else if(edge < 0.02){
+      kellyHtml = `<div style="color:#888;">Pas d'edge vs le marché (cote ${(price*100).toFixed(0)}¢ vs ${pctSide}%) : le prix est déjà juste, s'abstenir.</div>`;
+    }
+  }
+
+  // 4) Rappel drift
+  const driftPct = p.drift*p.t*100;
+  const driftHtml = Math.abs(driftPct)>=0.01
+    ? `<div style="color:#8fa;">Momentum Binance 60s intégré : ${driftPct>=0?'+':''}${driftPct.toFixed(3)}% projeté d'ici la clôture.</div>` : '';
+
+  panel.style.display='block';
+  panel.innerHTML =
+    `<div style="color:${adviceColor};"><b>${advice}</b></div>`+
+    freezeHtml + kellyHtml + driftHtml +
+    `<div style="color:#888;">Écart vs Price to Beat : ${(p.gap*100).toFixed(3)}% · volatilité σ/s : ${(p.sigma*100).toFixed(4)}%</div>`+
+    `<div style="color:#666;font-size:11px;">Estimation heuristique, pas un conseil financier.</div>`;
 }
 
 // ================== MOTEUR DE SIGNAUX FORTS (proba + edge + lead + backtest + score) ==================
