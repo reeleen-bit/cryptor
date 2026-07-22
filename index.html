@@ -178,10 +178,7 @@
         <span><span class="dot" style="background:#7f95ff"></span>tendance projetée</span>
         <span><span class="dot" style="background:rgba(127,149,255,.25)"></span>zone d'incertitude</span>
       </div>
-      <div class="disclaimer">
-        Régression linéaire sur les dernières clôtures de la période sélectionnée, cône d'incertitude basé sur l'ATR.
-        Recalculée à chaque changement de période. Pas une garantie de prix futur.
-      </div>
+
       <div class="note" id="proAdvicePanel" style="display:none;margin-top:8px;background:rgba(127,149,255,.06);border:1px solid rgba(127,149,255,.35);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.7;"></div>
       <div class="note" id="signalPanel" style="display:none;margin-top:8px;background:rgba(255,176,32,.07);border:1px solid rgba(255,176,32,.35);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.7;"></div>
       <div class="note" id="lastMinutesAdvicePanel" style="display:none;margin-top:8px;background:rgba(14,203,129,.06);border:1px solid rgba(14,203,129,.3);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6;"></div>
@@ -192,6 +189,7 @@
 
 </div>
 
+<div id="topAdvice" style="display:none;position:fixed;top:12px;right:14px;z-index:60;background:rgba(20,24,38,.95);border:1px solid rgba(127,149,255,.5);border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.5;max-width:290px;box-shadow:0 4px 18px rgba(0,0,0,.5);"></div>
 <div id="alertPopup" class="alertpop"><span id="alertClose" class="alertpop-close">×</span><span id="alertContent"></span></div>
 <div id="volTooltip" class="vol-tooltip"></div>
 
@@ -213,6 +211,11 @@ const TFS = [
 let currentSec = 2;
 const PAGE_OPEN_TIME = Date.now(); // les traits de session ne sont tracés qu'à partir de ce moment (pas sur l'historique rechargé au démarrage)
 let alertsEnabled = true; // doit être défini tôt : utilisé dès le premier tickCountdown() au chargement
+var marketOdds = {windowStart:null, tokenIdUp:null, mid:null, lastFetch:0, failed:false};
+var oddsHistory = [];       // {t, mid} cote Up
+var bookImbalance = null;   // part acheteuse côté Up (0-1)
+var lastBookFetch = 0;
+var pageOpenAt = Date.now();
 let lateSignalFlags = {}; // windowStart -> {momentum, secondsLeft} ; doit aussi être défini tôt (utilisé dans finalizeWindowTrack)
 let ticks = [];
 let binanceTicks = []; // flux live Binance (affichage), en parallèle de ticks (Chainlink, résolution)
@@ -1051,9 +1054,49 @@ function updateLastMinutesAdvice(){
   panel.innerHTML = `<span style="color:${color};">💡 Opportunité : le cours est ${strength} ${dir} du Price to Beat (${pct>=0?'+':''}${pct.toFixed(3)}%) à ${info.secondsLeft}s de la clôture — camp "${side}" semble avantagé pour l'instant (pas une garantie, le prix peut encore bouger).</span>`;
 }
 
-// ================== CONSEILS EFFECTIFS (sous la projection statistique) ==================
+// ================== CONSEILS EFFECTIFS (bas : sous la projection / haut-droite : analyse continue) ==================
+
+async function fetchBookImbalance(){
+  if(!marketOdds) return;
+  if(!marketOdds) return;
+  if(marketOdds.failed || !marketOdds.tokenIdUp) return;
+  if(now()-lastBookFetch < 10000) return;
+  lastBookFetch = now();
+  try{
+    const res = await fetch('https://clob.polymarket.com/book?token_id='+marketOdds.tokenIdUp);
+    if(!res.ok) return;
+    const b = await res.json();
+    const sum = a => (a||[]).reduce((x,l)=>x+parseFloat(l.size||0),0);
+    const bid = sum(b.bids), ask = sum(b.asks);
+    if(bid+ask>0) bookImbalance = bid/(bid+ask);
+  }catch(e){}
+}
+function computeOddsMomentum(){
+  // variation de la cote Up en cents sur ~30s
+  if(oddsHistory.length<2) return null;
+  const cutoff = now()-30000;
+  const old = oddsHistory.find(o=>o.t>=cutoff) || oddsHistory[0];
+  const last = oddsHistory[oddsHistory.length-1];
+  if(last.t-old.t < 8000) return null;
+  return (last.mid-old.mid)*100; // en cents
+}
+function detectSpike(){
+  // mouvement subit : retour 30s Binance > 2.5x la volatilite normale
+  const src = binanceTicks.length>=5 ? binanceTicks : ticks;
+  if(src.length<5) return null;
+  const cutoff = now()-30000;
+  const rec = src.filter(t=>t.t>=cutoff);
+  if(rec.length<3 || !rec[0].v) return null;
+  const move = (rec[rec.length-1].v-rec[0].v)/rec[0].v;
+  const sigma = computeSigmaPerSec();
+  if(!sigma) return null;
+  const norm = sigma*Math.sqrt(30);
+  if(Math.abs(move) > 2.5*norm && Math.abs(move) > 0.0006){
+    return {dir: move>0?'up':'down', move};
+  }
+  return null;
+}
 function computeProbUpDrift(){
-  // Proba Up avec terme de drift = momentum Binance 60s (plus précis en fin de fenêtre)
   const info = getWindowInfo(WINDOW_SECONDS);
   if(targetPrice===null || estimatedPTB || !ticks.length) return null;
   const current = ticks[ticks.length-1].v;
@@ -1065,79 +1108,137 @@ function computeProbUpDrift(){
   const cutoff = now()-60000;
   const bRecent = binanceTicks.filter(x=>x.t>=cutoff);
   if(bRecent.length>=3 && bRecent[0].v){
-    drift = ((bRecent[bRecent.length-1].v - bRecent[0].v)/bRecent[0].v)/60; // par seconde
+    drift = ((bRecent[bRecent.length-1].v - bRecent[0].v)/bRecent[0].v)/60;
   }
   const z = (gap + drift*t)/(sigma*Math.sqrt(t));
-  return {prob: normCdf(z), gap, sigma, t, drift, current};
+  return {prob: normCdf(z), gap, sigma, t};
 }
 function detectChainlinkFreeze(){
-  // Chainlink "gelé" : pas de tick depuis >12s alors que Binance a bougé < seuil de déviation (0.5%)
   if(!ticks.length || !binanceTicks.length) return null;
   const lastCl = ticks[ticks.length-1];
   const age = (now()-lastCl.t)/1000;
   if(age < 12) return null;
-  const b = binanceTicks[binanceTicks.length-1].v;
-  const dev = Math.abs((b-lastCl.v)/lastCl.v);
-  if(dev < 0.005) return {age: Math.round(age), dev};
-  return null;
+  const dev = Math.abs((binanceTicks[binanceTicks.length-1].v-lastCl.v)/lastCl.v);
+  return dev < 0.005 ? {age: Math.round(age)} : null;
 }
+
+// ---- Scalp : entree quand Binance bondit et que la cote n'a pas encore suivi ; sortie quand ca s'essouffle ----
+var scalpState = null; // {side, entryMid, entryAt}
+const SCALP_LOG_KEY = 'cryptor_scalp_log_v1';
+function logScalp(entry){ try{ const l=JSON.parse(localStorage.getItem(SCALP_LOG_KEY)||'[]'); l.push(entry); localStorage.setItem(SCALP_LOG_KEY, JSON.stringify(l.slice(-200))); }catch(e){} }
+function updateScalpEngine(spike){
+  if(!marketOdds || marketOdds.mid===null) return null;
+  const om = computeOddsMomentum();
+  if(!scalpState){
+    if(spike){
+      const lag = om===null || Math.abs(om) < 3; // cote pas encore partie
+      if(lag){
+        scalpState = {side: spike.dir, entryMid: marketOdds.mid, entryAt: now()};
+        const side = spike.dir==='up' ? 'UP' : 'DOWN';
+        const src = spike.dir==='up' ? 'Binance vient de bondir' : 'Binance vient de chuter';
+        return {kind:'enter', html:`<div style="color:${spike.dir==='up'?'var(--up)':'var(--down)'};"><b>${spike.dir==='up'?'\u{1F680}':'\u{1F53B}'} ${side} va grandir subitement dans quelques secondes</b> \u2014 ${src}.</div>`};
+      }
+    }
+    return null;
+  }
+  // en position : sortie si essoufflement ou 90s ecoulees
+  const held = now()-scalpState.entryAt;
+  const gain = (scalpState.side==='up' ? marketOdds.mid-scalpState.entryMid : scalpState.entryMid-marketOdds.mid)*100;
+  const fading = om!==null && (scalpState.side==='up' ? om < 1 : om > -1);
+  if((held>15000 && fading) || held>90000 || gain>=12){
+    logScalp({side:scalpState.side, gainCents:+gain.toFixed(1), heldSec:Math.round(held/1000), t:now()});
+    scalpState = null;
+    return {kind:'exit', html:`<div style="color:#ffd54f;"><b>\u{1F4B0} VENDRE maintenant</b> \u2014 le mouvement s'essouffle (${gain>=0?'+':''}${gain.toFixed(0)}\u00A2).</div>`};
+  }
+  return {kind:'hold', html:`<div style="color:#ccc;">\u23F3 Position ${scalpState.side==='up'?'UP':'DOWN'} en cours (${gain>=0?'+':''}${gain.toFixed(0)}\u00A2) \u2014 attendre le signal de vente.</div>`};
+}
+
+// ---- Panneau du bas : seulement < 60s ou mouvement subit ----
+var lastScalpHtml = '', lastScalpAt = 0;
 function updateProAdvice(){
+  if(typeof marketOdds==='undefined'||!marketOdds) return;
   const panel = document.getElementById('proAdvicePanel');
   if(!panel) return;
+  fetchBookImbalance();
   const info = getWindowInfo(WINDOW_SECONDS);
-  const p = computeProbUpDrift();
-  if(!p){ panel.style.display='none'; return; }
-  const side = p.prob>=0.5 ? 'Up' : 'Down';
-  const probSide = side==='Up' ? p.prob : 1-p.prob;
-  const color = side==='Up' ? 'var(--up)' : 'var(--down)';
-  const pctSide = (probSide*100).toFixed(0);
+  const spike = detectSpike();
+  const scalp = updateScalpEngine(spike);
+  if(scalp){ lastScalpHtml = scalp.html; lastScalpAt = now(); }
+  const scalpFresh = lastScalpHtml && (now()-lastScalpAt < 20000 || (scalp&&scalp.kind==='hold'));
 
-  // 1) Conseil principal selon la confiance et le temps restant
-  let advice, adviceColor = color;
-  if(probSide >= 0.85 && info.secondsLeft <= 60){
-    advice = `✅ Miser "${side}" : ${pctSide}% de proba à ${info.secondsLeft}s de la clôture. Zone la plus fiable.`;
-  } else if(probSide >= 0.70 && info.secondsLeft <= 150){
-    advice = `👍 "${side}" favorisé à ${pctSide}%. Miser petit, ou attendre <60s pour confirmer.`;
-  } else if(probSide < 0.60){
-    advice = `⏸ Ne pas miser : proba trop proche de 50/50 (${pctSide}% "${side}"). Attendre.`;
-    adviceColor = '#aaa';
-  } else {
-    advice = `⏳ "${side}" à ${pctSide}%, mais il reste ${info.secondsLeft}s : trop tôt, le prix peut encore tourner.`;
-    adviceColor = '#ccc';
-  }
-
-  // 2) Gel Chainlink terminal (quasi free lunch en toute fin de fenêtre)
-  const freeze = detectChainlinkFreeze();
-  let freezeHtml = '';
-  if(freeze && info.secondsLeft <= 45 && Math.abs(p.gap) > 2*p.sigma*Math.sqrt(p.t)){
-    freezeHtml = `<div style="color:var(--up);"><b>🎯 SNIPER :</b> Chainlink figé depuis ${freeze.age}s (écart Binance ${(freeze.dev*100).toFixed(2)}% &lt; 0.50% de déviation) et gap &gt; 2σ — la clôture "${side}" est quasi acquise (~85-95%).</div>`;
-  }
-
-  // 3) Edge vs cote marché + mise quart-Kelly
-  let kellyHtml = '';
-  if(marketOdds.mid!==null){
-    const price = side==='Up' ? marketOdds.mid : 1-marketOdds.mid;
-    const edge = probSide - price;
-    if(edge >= 0.05 && price>0 && price<1){
-      const kelly = Math.max(0, (probSide - price)/(1 - price)) * 0.25;
-      kellyHtml = `<div>💰 Edge +${(edge*100).toFixed(1)} pts vs cote (${(price*100).toFixed(0)}¢) → mise conseillée : <b>${(kelly*100).toFixed(1)}% du capital</b> (quart-Kelly).</div>`;
-    } else if(edge < 0.02){
-      kellyHtml = `<div style="color:#888;">Pas d'edge vs le marché (cote ${(price*100).toFixed(0)}¢ vs ${pctSide}%) : le prix est déjà juste, s'abstenir.</div>`;
+  let html = '';
+  if(scalpFresh){
+    html = lastScalpHtml;
+  } else if(spike){
+    const side = spike.dir==='up'?'UP':'DOWN';
+    const src = spike.dir==='up'?'Binance vient de bondir':'Binance vient de chuter';
+    html = `<div style="color:${spike.dir==='up'?'var(--up)':'var(--down)'};"><b>${spike.dir==='up'?'\u{1F680}':'\u{1F53B}'} ${side} va grandir subitement dans quelques secondes</b> \u2014 ${src}.</div>`;
+  } else if(info.secondsLeft<=60){
+    const p = computeProbUpDrift();
+    if(p){
+      const side = p.prob>=0.5?'UP':'DOWN';
+      const probSide = Math.round((side==='UP'?p.prob:1-p.prob)*100);
+      const color = side==='UP'?'var(--up)':'var(--down)';
+      if(detectChainlinkFreeze() && probSide>=80){
+        html = `<div style="color:${color};"><b>\u{1F3AF} ${side} quasi certain</b> \u2014 le prix officiel est fig\u00E9 du bon c\u00F4t\u00E9.</div>`;
+      } else if(probSide>=85){
+        html = `<div style="color:${color};"><b>\u2705 ${side} devrait gagner cette manche</b>.</div>`;
+      } else if(probSide>=70){
+        html = `<div style="color:${color};">\u{1F44D} ${side} a l'avantage.</div>`;
+      }
     }
   }
-
-  // 4) Rappel drift
-  const driftPct = p.drift*p.t*100;
-  const driftHtml = Math.abs(driftPct)>=0.01
-    ? `<div style="color:#8fa;">Momentum Binance 60s intégré : ${driftPct>=0?'+':''}${driftPct.toFixed(3)}% projeté d'ici la clôture.</div>` : '';
-
+  if(!html){
+    const om = computeOddsMomentum();
+    if(om!==null && Math.abs(om)>=4){
+      const side = om>0?'UP':'DOWN';
+      html = `<div style="color:${om>0?'var(--up)':'var(--down)'};">\u{1F4C8} ${side} prend le dessus \u2014 l'argent afflue de ce c\u00F4t\u00E9.</div>`;
+    }
+  }
+  if(!html){ panel.style.display='none'; return; }
   panel.style.display='block';
-  panel.innerHTML =
-    `<div style="color:${adviceColor};"><b>${advice}</b></div>`+
-    freezeHtml + kellyHtml + driftHtml +
-    `<div style="color:#888;">Écart vs Price to Beat : ${(p.gap*100).toFixed(3)}% · volatilité σ/s : ${(p.sigma*100).toFixed(4)}%</div>`+
-    `<div style="color:#666;font-size:11px;">Estimation heuristique, pas un conseil financier.</div>`;
+  panel.innerHTML = html;
 }
+
+// ---- Panneau haut-droite : analyse continue multi-periodes depuis l'ouverture ----
+function analyzeTimeframe(sec){
+  const all = buildCandles(sec);
+  if(all.length<12) return 0;
+  const n = Math.min(30, all.length);
+  const closes = all.slice(-n).map(c=>c.close);
+  const {slope} = linreg(closes);
+  const ma = closes.reduce((a,b)=>a+b,0)/closes.length;
+  const last = closes[closes.length-1];
+  let score = 0;
+  if(slope>0) score++; else if(slope<0) score--;
+  if(last>ma) score++; else if(last<ma) score--;
+  return score; // -2..+2
+}
+var lastTopUpdate = 0;
+function updateTopAdvice(){
+  if(now()-lastTopUpdate < 2000) return;
+  lastTopUpdate = now();
+  const el = document.getElementById('topAdvice');
+  if(!el) return;
+  if(!ticks.length){ el.style.display='none'; return; }
+  const frames = [1,2,5,10,30,60,300];
+  let bull=0, bear=0;
+  frames.forEach(sec=>{ const sc = analyzeTimeframe(sec); if(sc>0) bull++; else if(sc<0) bear++; });
+  const om = computeOddsMomentum();
+  if(om!==null){ if(om>2) bull++; else if(om<-2) bear++; }
+  const total = bull+bear;
+  let msg, color;
+  if(total===0){ el.style.display='none'; return; }
+  const upPct = bull/total*100;
+  if(upPct>=75){ msg='\u{1F4CA} Plut\u00F4t UP \u2014 presque tout monte.'; color='var(--up)'; }
+  else if(upPct>=55){ msg='\u{1F4CA} L\u00E9ger avantage UP.'; color='var(--up)'; }
+  else if(upPct<=25){ msg='\u{1F4CA} Plut\u00F4t DOWN \u2014 presque tout baisse.'; color='var(--down)'; }
+  else if(upPct<=45){ msg='\u{1F4CA} L\u00E9ger avantage DOWN.'; color='var(--down)'; }
+  else { msg='\u{1F4CA} March\u00E9 ind\u00E9cis.'; color='#ccc'; }
+  el.style.display='block';
+  el.innerHTML = `<div style="color:${color};"><b>${msg}</b></div>`;
+}
+setInterval(updateTopAdvice, 2000);
 
 // ================== MOTEUR DE SIGNAUX FORTS (proba + edge + lead + backtest + score) ==================
 
@@ -1179,14 +1280,13 @@ function computeProbUp(){
 }
 
 // ---- 2) Cotes du marché Polymarket courant (CLOB midpoint du token "Up") ----
-let marketOdds = {windowStart:null, tokenIdUp:null, mid:null, lastFetch:0, failed:false};
 async function fetchCurrentMarketOdds(){
   const info = getWindowInfo(WINDOW_SECONDS);
   const nowMs = now();
   if(marketOdds.windowStart !== info.start){
     marketOdds = {windowStart: info.start, tokenIdUp:null, mid:null, lastFetch:0, failed:false};
   }
-  if(marketOdds.failed || nowMs - marketOdds.lastFetch < 15000) return;
+  if(marketOdds.failed || nowMs - marketOdds.lastFetch < 5000) return;
   marketOdds.lastFetch = nowMs;
   try{
     if(!marketOdds.tokenIdUp){
@@ -1206,7 +1306,7 @@ async function fetchCurrentMarketOdds(){
     if(!res2.ok) throw new Error('clob '+res2.status);
     const j = await res2.json();
     const mid = parseFloat(j.mid);
-    if(!isNaN(mid)) marketOdds.mid = mid;
+    if(!isNaN(mid)){ marketOdds.mid = mid; oddsHistory.push({t: now(), mid}); if(oddsHistory.length>200) oddsHistory.shift(); }
   }catch(e){
     // CORS ou API indisponible : on n'insiste pas cette fenêtre, l'outil reste fonctionnel sans edge
     if(String(e).includes('CORS') || String(e).includes('Failed to fetch')) marketOdds.failed = true;
